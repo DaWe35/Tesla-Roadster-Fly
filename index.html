@@ -46,27 +46,26 @@
         </div>
       </div>
       <div class="hud-bottom">
-        <div class="gas-wrap">
-          <span class="label">THRUSTER</span>
-          <div class="gas-bar"><div id="gas-fill"></div></div>
+        <div class="surface-wrap">
+          <span class="label">SURFACE</span>
+          <span id="hud-surface" class="surface-value">FLOOR</span>
         </div>
-        <button type="button" id="thrust-btn" aria-label="Thruster">THRUST</button>
+        <button type="button" id="flip-btn" aria-label="Flip to ceiling">FLIP</button>
       </div>
     </div>
 
     <div id="start-screen" class="overlay">
       <div class="overlay-panel">
         <p class="brand">ROADSTER RISE</p>
-        <h1>Climb the city.</h1>
+        <h1>Climb. Flip. Survive.</h1>
         <p class="tagline">
-          The 2026 Tesla Roadster — cold-gas thrusters, stacked streets, no lane switching.
-          Jump up. Drop down. Survive the skyline.
+          Hop between stacked city levels. Gaps break every path — flip upside down onto a
+          glowing light beam to cross, then flip back upright. Shift is how you survive.
         </p>
         <ul class="controls">
-          <li><kbd>Space</kbd> / <kbd>↑</kbd> Jump / rise</li>
-          <li><kbd>↓</kbd> Drop to lower level</li>
-          <li><kbd>Shift</kbd> Thruster boost</li>
-          <li>Swipe ↑↓ · tap THRUST on mobile</li>
+          <li><kbd>↑</kbd> / <kbd>Space</kbd> / swipe up — move one level up</li>
+          <li><kbd>↓</kbd> / <kbd>S</kbd> / swipe down — move one level down</li>
+          <li><kbd>Shift</kbd> / FLIP — ceiling flip; light beams appear to cross gaps</li>
         </ul>
         <button type="button" id="start-btn" class="cta">START RUN</button>
         <p class="best-line">Best: <span id="start-best">0.0s</span></p>

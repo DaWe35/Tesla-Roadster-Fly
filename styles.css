@@ -102,46 +102,54 @@ body {
   pointer-events: none;
 }
 
-.gas-wrap {
+.surface-wrap {
   flex: 1;
-  max-width: 14rem;
+  max-width: 12rem;
+  padding: 0.45rem 0.7rem;
+  background: linear-gradient(180deg, rgba(12, 28, 52, 0.75), rgba(8, 18, 36, 0.55));
+  border: 1px solid rgba(255, 255, 255, 0.12);
   pointer-events: none;
 }
 
-.gas-bar {
-  height: 0.55rem;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  overflow: hidden;
+.surface-wrap .label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
 }
 
-#gas-fill {
-  height: 100%;
-  width: 100%;
-  background: linear-gradient(90deg, #1ec8ff, #7dffb3);
-  box-shadow: 0 0 12px rgba(30, 200, 255, 0.55);
-  transition: width 0.08s linear;
+.surface-value {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--good);
 }
 
-#thrust-btn {
+.surface-value.ceiling {
+  color: #7dd3fc;
+}
+
+#flip-btn {
   pointer-events: auto;
   width: 4.6rem;
   height: 4.6rem;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.35);
-  background: radial-gradient(circle at 35% 30%, #ff6b4a, var(--accent) 55%, #8a0d18);
+  background: radial-gradient(circle at 35% 30%, #5eead4, #0ea5e9 55%, #0369a1);
   color: white;
   font-family: var(--font-display);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
-  box-shadow: 0 8px 24px rgba(225, 29, 46, 0.45);
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.45);
   cursor: pointer;
 }
 
-#thrust-btn:active,
-#thrust-btn.active {
-  transform: scale(0.94);
+#flip-btn:active,
+#flip-btn.active {
+  transform: scale(0.94) rotate(180deg);
   filter: brightness(1.15);
 }
 
