@@ -10,7 +10,7 @@ Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sáv
 
 ### How to run
 
-No build step. Serve the folder with any static server, or open via GitHub Pages after enabling Pages (Actions source).
+No build step. **Do not open `index.html` as a file:// URL** — browsers block ES modules that way. Serve the folder with any static server, or use GitHub Pages (Settings → Pages → Source: GitHub Actions).
 
 ```bash
 # Python
@@ -20,9 +20,10 @@ python3 -m http.server 8080
 npx --yes serve -l 8080
 ```
 
-Then open `http://localhost:8080`.
+Then open `http://localhost:8080` and click **START RUN**.
 
-For automated smoke tests: `http://localhost:8080/?autostart=1`
+Smoke test: `http://localhost:8080/?autostart=1`  
+Verify harness (needs puppeteer): `node scripts/verify-start.mjs`
 
 ### How to play
 
@@ -49,13 +50,13 @@ For automated smoke tests: `http://localhost:8080/?autostart=1`
 
 ### Futtatás
 
-Nincs build. Szolgáld ki a mappát bármilyen statikus szerverrel, vagy használd a GitHub Pages-t.
+Nincs build. **Ne file://-ként nyisd meg** — ES modulok miatt kell HTTP szerver. GitHub Pages: Settings → Pages → Source: GitHub Actions.
 
 ```bash
 python3 -m http.server 8080
 ```
 
-Majd nyisd meg: `http://localhost:8080`.
+Majd: `http://localhost:8080` → **START RUN**.
 
 ### Játékmenet
 

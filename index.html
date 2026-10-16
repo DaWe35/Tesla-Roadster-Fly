@@ -13,13 +13,20 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      "three": "./vendor/three.module.js"
     }
   }
   </script>
 </head>
 <body>
+  <div id="boot-error" class="overlay hidden" role="alert">
+    <div class="overlay-panel">
+      <p class="brand">ROADSTER RISE</p>
+      <h1>Couldn’t load</h1>
+      <p class="tagline" id="boot-error-msg">The game failed to start.</p>
+      <p class="tagline">Serve this folder over HTTP (not file://), then reload.</p>
+    </div>
+  </div>
   <div id="game-root">
     <canvas id="game-canvas"></canvas>
 
@@ -78,6 +85,14 @@
     </div>
   </div>
 
-  <script type="module" src="js/game.js"></script>
+  <script type="module">
+    import("./js/game.js").catch((err) => {
+      const box = document.getElementById("boot-error");
+      const msg = document.getElementById("boot-error-msg");
+      if (msg) msg.textContent = String(err && err.message ? err.message : err);
+      if (box) box.classList.remove("hidden");
+      console.error(err);
+    });
+  </script>
 </body>
 </html>

@@ -32,9 +32,18 @@ const finalTime = document.getElementById("final-time");
 const finalBest = document.getElementById("final-best");
 const gameoverReason = document.getElementById("gameover-reason");
 
-let bestTime = Number(localStorage.getItem(STORAGE_KEY) || 0);
-startBest.textContent = bestTime.toFixed(1) + "s";
-hudBest.textContent = bestTime.toFixed(1) + "s";
+let bestTime = 0;
+try {
+  bestTime = Number(localStorage.getItem(STORAGE_KEY) || 0) || 0;
+} catch (_) {
+  bestTime = 0;
+}
+if (startBest) startBest.textContent = bestTime.toFixed(1) + "s";
+if (hudBest) hudBest.textContent = bestTime.toFixed(1) + "s";
+
+if (!canvas || !startBtn) {
+  throw new Error("Missing required DOM (#game-canvas / #start-btn). Check index.html.");
+}
 
 /* ── Renderer / Scene ─────────────────────────────────────── */
 const renderer = new THREE.WebGLRenderer({
@@ -316,7 +325,7 @@ function createRoadster() {
   // Tesla-ish front badge plate
   const badge = new THREE.Mesh(
     new THREE.CircleGeometry(0.12, 16),
-    new THREE.MeshStandardMaterial({ color: 0xe11d2e, metalness: 0.6, roughnessness: 0.3 })
+    new THREE.MeshStandardMaterial({ color: 0xe11d2e, metalness: 0.6, roughness: 0.3 })
   );
   badge.position.set(2.72, 0.38, 0);
   badge.rotation.y = Math.PI / 2;
@@ -440,7 +449,7 @@ function makeBuilding(w, h, d, color) {
   if (h > 6) {
     const roof = new THREE.Mesh(
       new THREE.BoxGeometry(w * 0.5, 0.4, d * 0.5),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughnessness: 0.5 })
+      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.5 })
     );
     roof.position.y = h + 0.2;
     g.add(roof);
@@ -555,7 +564,7 @@ function makeBridge(levelY) {
   for (const z of [-3.2, 3.2]) {
     const pillar = new THREE.Mesh(
       new THREE.BoxGeometry(1.2, levelY + 2.0, 1.0),
-      new THREE.MeshStandardMaterial({ color: 0x868e96, roughnessness: 0.6 })
+      new THREE.MeshStandardMaterial({ color: 0x868e96, roughness: 0.6 })
     );
     pillar.position.set(0, (levelY + 2.0) / 2, z);
     pillar.castShadow = true;
@@ -603,7 +612,7 @@ function makeTunnel(levelY) {
   for (const z of [-4.2, 4.2]) {
     const wall = new THREE.Mesh(
       new THREE.BoxGeometry(6, 3.0, 1.2),
-      new THREE.MeshStandardMaterial({ color: 0x343a40, roughnessness: 0.9 })
+      new THREE.MeshStandardMaterial({ color: 0x343a40, roughness: 0.9 })
     );
     wall.position.set(0, levelY + 1.5, z);
     wall.castShadow = true;
@@ -611,7 +620,7 @@ function makeTunnel(levelY) {
   }
   const roof = new THREE.Mesh(
     new THREE.BoxGeometry(6, 0.8, 10),
-    new THREE.MeshStandardMaterial({ color: 0x212529, roughnessness: 0.8 })
+    new THREE.MeshStandardMaterial({ color: 0x212529, roughness: 0.8 })
   );
   roof.position.set(0, levelY + 3.0, 0);
   roof.castShadow = true;
@@ -797,7 +806,7 @@ function createDeckSurface(levelIndex, zCenter) {
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN, 0.28, 1.9),
-        new THREE.MeshStandardMaterial({ color: 0xb8c0cc, roughnessness: 0.9 })
+        new THREE.MeshStandardMaterial({ color: 0xb8c0cc, roughness: 0.9 })
       );
       walk.position.set(0, ly + 0.06, side * 5.6);
       walk.receiveShadow = true;
@@ -1450,7 +1459,11 @@ function die(reason) {
   state.reason = reason;
   if (state.time > bestTime) {
     bestTime = state.time;
-    localStorage.setItem(STORAGE_KEY, String(bestTime));
+    try {
+      localStorage.setItem(STORAGE_KEY, String(bestTime));
+    } catch (_) {
+      /* private mode / blocked storage */
+    }
   }
   hud.classList.add("hidden");
   gameoverReason.textContent = reason;
@@ -1460,38 +1473,50 @@ function die(reason) {
 }
 
 function startGame() {
-  startScreen.classList.add("hidden");
-  gameoverScreen.classList.add("hidden");
-  hud.classList.remove("hidden");
+  try {
+    startScreen?.classList.add("hidden");
+    gameoverScreen?.classList.add("hidden");
+    hud?.classList.remove("hidden");
 
-  Object.assign(state, {
-    running: true,
-    dead: false,
-    time: 0,
-    speed: 14,
-    baseSpeed: 14,
-    level: 0,
-    y: 0,
-    vy: 0,
-    grounded: true,
-    onTrain: false,
-    trainRef: null,
-    gas: 1,
-    thrusting: false,
-    pitch: 0,
-    suspension: 0,
-    wheelSpin: 0,
-    reason: "",
-    invuln: 1.2,
-  });
+    Object.assign(state, {
+      running: true,
+      dead: false,
+      time: 0,
+      speed: 14,
+      baseSpeed: 14,
+      level: 0,
+      y: 0,
+      vy: 0,
+      grounded: true,
+      onTrain: false,
+      trainRef: null,
+      gas: 1,
+      thrusting: false,
+      pitch: 0,
+      suspension: 0,
+      wheelSpin: 0,
+      reason: "",
+      invuln: 1.2,
+    });
 
-  roadster.position.set(0, 0, 0);
-  camPos.set(-7.2, 3.6, 0);
-  camera.position.copy(camPos);
-  camera.fov = 50;
+    roadster.position.set(0, 0, 0);
+    roadster.userData.body.rotation.y = 0;
+    camPos.set(-7.2, 3.6, 0);
+    camera.position.copy(camPos);
+    camera.fov = 50;
+    camera.updateProjectionMatrix();
 
-  resetWorld();
-  updateHUD();
+    resetWorld();
+    updateHUD();
+  } catch (err) {
+    console.error("startGame failed", err);
+    state.running = false;
+    startScreen?.classList.remove("hidden");
+    const box = document.getElementById("boot-error");
+    const msg = document.getElementById("boot-error-msg");
+    if (msg) msg.textContent = "Start failed: " + (err?.message || err);
+    box?.classList.remove("hidden");
+  }
 }
 
 /* ── Input ────────────────────────────────────────────────── */
