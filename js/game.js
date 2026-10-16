@@ -894,6 +894,8 @@ const state = {
   wheelSpin: 0,
   reason: "",
   invuln: 0.8,
+  /** While set, refuse landing on this level index and above (drop-through). */
+  dropIgnoreAbove: null,
 };
 
 const keys = { jump: false, drop: false, thrust: false };
@@ -1102,19 +1104,28 @@ function updatePlayer(dt) {
     state.vy = 9.5;
     state.grounded = false;
     state.onTrain = false;
+    state.dropIgnoreAbove = null;
     spawnDust(roadster.position);
   }
   input.jumpPressed = false;
 
-  // Drop — cut upward velocity / fall to lower level
-  if (input.dropPressed) {
+  // Drop / fast-fall
+  // Root bug was: leave y on the same deck → landing check re-snaps same frame.
+  const wantDrop = input.dropPressed || keys.drop;
+  if (wantDrop) {
     if (state.grounded && state.level > 0) {
+      const fromLevel = state.level;
+      state.dropIgnoreAbove = fromLevel;
       state.grounded = false;
       state.onTrain = false;
-      state.vy = -2;
-      state.level -= 1;
+      // Nudge below the deck surface so we can't re-land on it
+      state.y = LEVELS[fromLevel].y - 0.45;
+      state.vy = -12;
+      state.level = fromLevel - 1;
+      spawnDust(roadster.position);
     } else if (!state.grounded) {
-      state.vy = Math.min(state.vy, -8);
+      // Hold Down/S or swipe-drop: fast-fall while airborne
+      state.vy = Math.min(state.vy, -16);
     }
   }
   input.dropPressed = false;
@@ -1126,6 +1137,7 @@ function updatePlayer(dt) {
     state.gas = Math.max(0, state.gas - dt * 0.38);
     state.vy += 22 * dt;
     state.grounded = false;
+    state.dropIgnoreAbove = null;
     updateJets(dt, true);
   } else {
     state.thrusting = false;
@@ -1151,6 +1163,11 @@ function updatePlayer(dt) {
 
   // Try current and nearby levels
   for (let li = LEVELS.length - 1; li >= 0; li--) {
+    // Skip the deck we just dropped through (and anything above it).
+    // Do NOT clear this by Y alone — the landing window overlaps that band
+    // and would snap the car back onto the same deck.
+    if (state.dropIgnoreAbove !== null && li >= state.dropIgnoreAbove) continue;
+
     const deckY = getDeckY(li, roadster.position.x);
     if (deckY === null) continue;
 
@@ -1175,6 +1192,7 @@ function updatePlayer(dt) {
       state.grounded = true;
       state.level = li;
       state.onTrain = isTrain;
+      state.dropIgnoreAbove = null;
       landed = true;
       state.suspension = -0.12;
       if (!isTrain) {
@@ -1497,6 +1515,7 @@ function startGame() {
       wheelSpin: 0,
       reason: "",
       invuln: 1.2,
+      dropIgnoreAbove: null,
     });
 
     roadster.position.set(0, 0, 0);
@@ -1546,18 +1565,21 @@ window.addEventListener("keyup", (e) => {
 });
 
 let touchStartY = 0;
-canvas.addEventListener(
+const swipeRoot = document.getElementById("game-root") || canvas;
+swipeRoot.addEventListener(
   "touchstart",
   (e) => {
     if (e.touches.length) touchStartY = e.touches[0].clientY;
   },
   { passive: true }
 );
-canvas.addEventListener(
+swipeRoot.addEventListener(
   "touchend",
   (e) => {
     const t = e.changedTouches[0];
     if (!t || !state.running) return;
+    // Ignore swipes that end on the thrust button
+    if (e.target && e.target.id === "thrust-btn") return;
     const dy = t.clientY - touchStartY;
     if (dy < -40) input.jumpPressed = true;
     else if (dy > 40) input.dropPressed = true;
@@ -1671,11 +1693,25 @@ window.__ROADSTER__ = {
     pitch: state.pitch,
     reason: state.reason,
     invuln: state.invuln,
+    dropIgnoreAbove: state.dropIgnoreAbove,
     bestTime,
   }),
   pressJump: () => { input.jumpPressed = true; },
   pressDrop: () => { input.dropPressed = true; },
+  holdDrop: (v) => { keys.drop = !!v; },
   setThrust: (v) => { thrustHeld = v; },
+  /** Place car on a level for tests (0 street / 1 track / 2 roof). */
+  setLevel(level) {
+    const li = Math.max(0, Math.min(LEVELS.length - 1, level | 0));
+    state.level = li;
+    state.y = LEVELS[li].y;
+    state.vy = 0;
+    state.grounded = true;
+    state.onTrain = false;
+    state.dropIgnoreAbove = null;
+    roadster.position.y = state.y;
+  },
+
   /** Headless harness: simulate N seconds at fixed 60fps without waiting on rAF */
   simulate(seconds) {
     const step = 1 / 60;
