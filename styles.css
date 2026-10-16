@@ -1,0 +1,295 @@
+:root {
+  --bg-deep: #0a1628;
+  --sky-glow: #3ec5ff;
+  --sun: #ffd56a;
+  --accent: #e11d2e;
+  --accent-hot: #ff4d3a;
+  --panel: rgba(8, 18, 36, 0.78);
+  --text: #f4f7fb;
+  --muted: #9bb0c9;
+  --good: #2ee6a6;
+  --font-display: "Orbitron", sans-serif;
+  --font-body: "Manrope", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 20%, #1a3a5c 0%, var(--bg-deep) 70%);
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+  user-select: none;
+}
+
+#game-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* —— HUD —— */
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.hud-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1.1rem;
+}
+
+.hud-stat {
+  min-width: 5.5rem;
+  padding: 0.45rem 0.7rem;
+  background: linear-gradient(180deg, rgba(12, 28, 52, 0.75), rgba(8, 18, 36, 0.55));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+.hud-stat .label,
+.gas-wrap .label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.hud-stat span:last-child {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--sun);
+}
+
+.hud-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem 1.25rem;
+  pointer-events: none;
+}
+
+.gas-wrap {
+  flex: 1;
+  max-width: 14rem;
+  pointer-events: none;
+}
+
+.gas-bar {
+  height: 0.55rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+
+#gas-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #1ec8ff, #7dffb3);
+  box-shadow: 0 0 12px rgba(30, 200, 255, 0.55);
+  transition: width 0.08s linear;
+}
+
+#thrust-btn {
+  pointer-events: auto;
+  width: 4.6rem;
+  height: 4.6rem;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: radial-gradient(circle at 35% 30%, #ff6b4a, var(--accent) 55%, #8a0d18);
+  color: white;
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  box-shadow: 0 8px 24px rgba(225, 29, 46, 0.45);
+  cursor: pointer;
+}
+
+#thrust-btn:active,
+#thrust-btn.active {
+  transform: scale(0.94);
+  filter: brightness(1.15);
+}
+
+/* —— Overlays —— */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background:
+    linear-gradient(160deg, rgba(8, 22, 48, 0.55) 0%, rgba(6, 14, 28, 0.72) 100%),
+    radial-gradient(ellipse at 70% 15%, rgba(62, 197, 255, 0.25), transparent 50%),
+    radial-gradient(ellipse at 20% 80%, rgba(225, 29, 46, 0.18), transparent 45%);
+  backdrop-filter: blur(2px);
+}
+
+.overlay-panel {
+  width: min(28rem, 100%);
+  padding: 2rem 1.75rem 1.75rem;
+  background:
+    linear-gradient(145deg, rgba(18, 42, 72, 0.92), rgba(8, 18, 36, 0.94)),
+    url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0h60v60H0z' fill='none'/%3E%3Cpath d='M0 30h60M30 0v60' stroke='rgba(255,255,255,0.04)' stroke-width='1'/%3E%3C/svg%3E");
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  animation: panelIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(1.55rem, 5vw, 2.15rem);
+  letter-spacing: 0.08em;
+  background: linear-gradient(92deg, #fff 10%, var(--sky-glow) 45%, var(--sun) 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-bottom: 0.65rem;
+  line-height: 1.1;
+}
+
+.overlay-panel h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(1.15rem, 3.5vw, 1.45rem);
+  letter-spacing: 0.04em;
+  margin-bottom: 0.7rem;
+}
+
+.tagline {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin-bottom: 1.15rem;
+}
+
+.controls {
+  list-style: none;
+  margin-bottom: 1.4rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.controls li {
+  font-size: 0.88rem;
+  color: #d5e2f0;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.6rem;
+  padding: 0.12rem 0.4rem;
+  margin-right: 0.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.cta {
+  width: 100%;
+  padding: 0.95rem 1.2rem;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.14em;
+  color: #140808;
+  background: linear-gradient(100deg, #ffd56a, #ff8a4a 40%, #e11d2e);
+  box-shadow: 0 10px 28px rgba(225, 29, 46, 0.35);
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.cta:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.cta:active {
+  transform: translateY(1px);
+}
+
+.best-line {
+  margin-top: 0.9rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.best-line span {
+  color: var(--good);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.score-big {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(2.4rem, 8vw, 3.4rem);
+  color: var(--sun);
+  line-height: 1;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.score-big .unit {
+  font-size: 0.45em;
+  margin-left: 0.15rem;
+  color: var(--muted);
+}
+
+@media (min-width: 720px) {
+  #thrust-btn {
+    opacity: 0.85;
+  }
+}
