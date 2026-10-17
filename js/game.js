@@ -16,6 +16,7 @@ const DECK_THICK = 0.55;
 const CAR_CLEARANCE = 0.92; // distance from surface to car origin when stuck
 const HOP_DURATION = 0.12; // near-instant level change
 const FLIP_DURATION = 0.22;
+const REACTION_TIME = 0.45; // human reaction budget before a gap
 const SEGMENT_LEN = 28;
 const SEGMENTS_AHEAD = 12;
 const SEGMENTS_BEHIND = 4;
@@ -385,53 +386,62 @@ function createRoadster() {
     wheels.push({ hub, spinner, baseY: y });
   }
 
-  // Cold-gas thruster plumes (body-local −Y = belly → floor upright / ceiling inverted)
+  // Cold-gas thrusters — large, depth-test-off so decks/cutaways never hide them.
+  // Local −Y = belly (floor when upright, ceiling when inverted).
+  const mkThrustMat = (color, opacity = 0) => {
+    const m = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    return m;
+  };
   const plumes = [];
-  const plumeMat = new THREE.MeshBasicMaterial({
-    color: 0xa5f3fc,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
   for (let i = 0; i < 4; i++) {
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(0.12, 0.85, 8, 1, true),
-      plumeMat.clone()
+    const group = new THREE.Group();
+    const sz = i < 2 ? -0.32 : 0.32;
+    const sx = -2.45 + (i % 2) * 0.22;
+    group.position.set(sx, 0.08, sz);
+
+    // Cone default axis = +Y; group quaternion aims +Y along belly each frame
+    const core = new THREE.Mesh(
+      new THREE.ConeGeometry(0.28, 2.2, 10, 1, true),
+      mkThrustMat(0xffffff, 0)
     );
-    plume.rotation.x = Math.PI; // tip points local −Y (belly)
-    const sz = i < 2 ? -0.28 : 0.28;
-    const sx = i % 2 === 0 ? -2.55 : -2.35;
-    plume.position.set(sx, 0.05, sz);
-    plume.visible = false;
-    body.add(plume);
-    plumes.push(plume);
+    core.position.y = 1.1; // extend outward from nozzle along +Y
+    core.renderOrder = 1001;
+    group.add(core);
+
+    const glow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.5, 3.0, 10, 1, true),
+      mkThrustMat(0x38bdf8, 0)
+    );
+    glow.position.y = 1.4;
+    glow.renderOrder = 1000;
+    group.add(glow);
+
+    const halo = new THREE.Mesh(
+      new THREE.CircleGeometry(0.45, 16),
+      mkThrustMat(0xe0f2fe, 0)
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = 0.05;
+    halo.renderOrder = 1002;
+    group.add(halo);
+
+    group.visible = false;
+    // Parent to root (not body) so we can aim in world space — body.roll=π
+    // would cancel a child Rx=π and hide belly jets when inverted.
+    root.add(group);
+    plumes.push({ group, core, glow, halo, nozzleIndex: i });
   }
 
-  // Soft glow discs at nozzle mouths
-  const glowDiscs = [];
-  for (let i = 0; i < 4; i++) {
-    const disc = new THREE.Mesh(
-      new THREE.CircleGeometry(0.16, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0xe0f7ff,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-      })
-    );
-    disc.rotation.x = Math.PI / 2;
-    const sz = i < 2 ? -0.28 : 0.28;
-    disc.position.set(-2.7, 0.12, sz);
-    disc.visible = false;
-    body.add(disc);
-    glowDiscs.push(disc);
-  }
-
-  // Jet particles (low count for mobile)
-  const jetCount = 48;
+  // Jet particles (world space, depth-test off)
+  const jetCount = 64;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
   const jetVel = new Float32Array(jetCount * 3);
@@ -444,16 +454,23 @@ function createRoadster() {
   const jets = new THREE.Points(
     jetGeo,
     new THREE.PointsMaterial({
-      color: 0xb8f4ff,
-      size: 0.2,
+      color: 0xffffff,
+      size: 0.45,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0,
+      depthTest: false,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
     })
   );
   jets.frustumCulled = false;
-  root.add(jets); // world-space particles
+  jets.renderOrder = 1003;
+  root.add(jets);
+
+  const _q = new THREE.Quaternion();
+  const _belly = new THREE.Vector3();
+  const _origin = new THREE.Vector3();
 
   root.userData = {
     body,
@@ -461,13 +478,16 @@ function createRoadster() {
     nozzles,
     jetLights,
     plumes,
-    glowDiscs,
     jets,
     jetPos,
     jetVel,
     jetLife,
     jetCount,
     thrustLevel: 0,
+    thrustHold: 0,
+    _q,
+    _belly,
+    _origin,
   };
   return root;
 }
@@ -1068,7 +1088,10 @@ let trains = [];
 let pickups = [];
 let nextSegmentX = 0;
 let rngSeed = 1;
-const GAP_PERIOD = 3; // stagger: at most one level gaps per column
+/** columnGapPlan.get(idx) -> boolean[3] — which levels are gapped in that column */
+const columnGapPlan = new Map();
+/** Last gap column index per level (for minimum spacing) */
+const lastGapCol = [-999, -999, -999];
 
 function rand() {
   rngSeed = (rngSeed * 16807) % 2147483647;
@@ -1077,6 +1100,17 @@ function rand() {
 
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
+}
+
+/** Distance a player needs to react + hop/flip before a gap, at near-max speed. */
+function minOverlapDist() {
+  const spd = state.maxSpeed;
+  return spd * (HOP_DURATION + FLIP_DURATION + REACTION_TIME);
+}
+
+function minGapSpacingCols() {
+  // At least this many columns between gap *starts* on the same or interacting levels
+  return Math.max(3, Math.ceil(minOverlapDist() / SEGMENT_LEN) + 1);
 }
 
 function hasDeckAt(level, x) {
@@ -1104,16 +1138,51 @@ function hasSupport(level, x) {
 }
 
 /**
- * Staggered gaps: never all three levels open at once.
- * Pattern (idx+li)%3===0 opens exactly one level per column after the safe start.
+ * Plan gaps for one column: at most one level, never all three, with spacing so
+ * a human can always hop/flip onto a solid adjacent road before falling.
  */
+function planColumnGaps(idx, safe) {
+  if (safe || idx < 4) return [false, false, false];
+  const sep = minGapSpacingCols();
+  // Often leave the column fully solid for breathing room
+  if (rand() > 0.42) return [false, false, false];
+
+  const candidates = [];
+  for (let li = 0; li < LEVELS.length; li++) {
+    if (idx - lastGapCol[li] < sep) continue;
+    // Adjacent levels must not have gapped too recently either (need solid hop target
+    // for the full overlap runway behind us)
+    let ok = true;
+    for (let o = 0; o < LEVELS.length; o++) {
+      if (o === li) continue;
+      // Hop target must be solid in this column (we only gap `li`, so OK) and
+      // must have been solid for the prior runway columns.
+      if (idx - lastGapCol[o] < 2) {
+        // very recent gap on neighbor — skip to keep overlap clean
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    candidates.push(li);
+  }
+  if (!candidates.length) return [false, false, false];
+
+  const pick = candidates[(rand() * candidates.length) | 0];
+  const gaps = [false, false, false];
+  gaps[pick] = true;
+  lastGapCol[pick] = idx;
+  return gaps;
+}
+
 function spawnSegment(xCenter, safe = false) {
   const idx = Math.round(xCenter / SEGMENT_LEN);
+  const gaps = planColumnGaps(idx, safe);
+  columnGapPlan.set(idx, gaps.slice());
   let anySolid = false;
 
   for (let li = 0; li < LEVELS.length; li++) {
-    const isGap = !safe && idx >= 3 && (idx + li) % GAP_PERIOD === 0;
-    if (isGap) {
+    if (gaps[li]) {
       const marker = new THREE.Group();
       marker.position.set(xCenter, 0, 0);
       marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
@@ -1133,6 +1202,65 @@ function spawnSegment(xCenter, safe = false) {
 
   if (!safe && anySolid) placeHazards(xCenter);
   nextSegmentX = Math.max(nextSegmentX, xCenter + SEGMENT_LEN);
+}
+
+/**
+ * Automated survivability check over the planned columns.
+ * Returns { ok, errors[], minOverlap, spacingCols }.
+ */
+function validateGapPlan() {
+  const errors = [];
+  const minOv = minOverlapDist();
+  const sep = minGapSpacingCols();
+  const indices = [...columnGapPlan.keys()].sort((a, b) => a - b);
+  if (indices.length < 6) {
+    errors.push("plan too short");
+  }
+
+  for (const idx of indices) {
+    const gaps = columnGapPlan.get(idx);
+    const gapCount = gaps.filter(Boolean).length;
+    if (gapCount >= LEVELS.length) {
+      errors.push(`col ${idx}: all levels gapped`);
+    }
+    if (gapCount > 1) {
+      errors.push(`col ${idx}: ${gapCount} levels gapped (max 1)`);
+    }
+    for (let li = 0; li < LEVELS.length; li++) {
+      if (!gaps[li]) continue;
+      // Spacing vs previous gap on same level
+      for (const j of indices) {
+        if (j >= idx) break;
+        if (!columnGapPlan.get(j)[li]) continue;
+        if (idx - j < sep) {
+          errors.push(`col ${idx} L${li}: gap only ${idx - j} cols after prior (need ${sep})`);
+        }
+      }
+      // Overlap runway: previous columns must have this level solid AND at least one
+      // other level solid for minOverlap distance
+      const runwayCols = Math.ceil(minOv / SEGMENT_LEN);
+      for (let back = 1; back <= runwayCols; back++) {
+        const p = idx - back;
+        const pg = columnGapPlan.get(p);
+        if (!pg) continue; // before world start
+        if (pg[li]) {
+          errors.push(`col ${idx} L${li}: no solid runway at col ${p}`);
+        }
+        const otherSolid = pg.some((g, o) => o !== li && !g);
+        if (!otherSolid) {
+          errors.push(`col ${idx} L${li}: no hop target solid at runway col ${p}`);
+        }
+      }
+      // In this gap column, every other level must be solid (hop/flip escape)
+      for (let o = 0; o < LEVELS.length; o++) {
+        if (o !== li && gaps[o]) {
+          errors.push(`col ${idx}: gap L${li} but L${o} also open`);
+        }
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors, minOverlap: minOv, spacingCols: sep };
 }
 
 function placeHazards(xCenter) {
@@ -1179,10 +1307,12 @@ function resetWorld() {
   trains = [];
   pickups = [];
   nextSegmentX = 0;
+  columnGapPlan.clear();
+  lastGapCol[0] = lastGapCol[1] = lastGapCol[2] = -999;
   rngSeed = (Date.now() % 100000) + 1;
 
   for (let i = -SEGMENTS_BEHIND; i < SEGMENTS_AHEAD; i++) {
-    spawnSegment(i * SEGMENT_LEN, i < 3);
+    spawnSegment(i * SEGMENT_LEN, i < 4);
   }
 }
 
@@ -1224,7 +1354,7 @@ function beginHop(dir) {
   state.hopFromY = state.y;
   state.hopToY = surfaceY(target, state.inverted);
   state.level = target;
-  burstThrusters(1);
+  burstThrusters(1, 0.55);
   return true;
 }
 
@@ -1241,7 +1371,7 @@ function beginFlip() {
   state.inverted = nextInv;
   state.flipToY = surfaceY(state.level, state.inverted);
   state.flipToRoll = state.inverted ? Math.PI : 0;
-  burstThrusters(1);
+  burstThrusters(1, 0.65);
   return true;
 }
 
@@ -1422,52 +1552,66 @@ function updateTrains(dt) {
 }
 
 /**
- * Thrusters: full jets during hop & throughout flip; continuous visual while
- * inverted (belly jets point toward the ceiling). Visual only — no physics.
+ * Thrusters (visual only). Root causes of "invisible" jets previously:
+ * - hop lasted ~0.12s then thrust lerped away immediately
+ * - small additive cones with depthTest buried in deck meshes / behind the car
+ * Fix: big depthTest:false plumes, thrustHold after hop/flip, bright sustained inverted jets.
  */
-function burstThrusters(amount = 1) {
+function burstThrusters(amount = 1, hold = 0.5) {
   const ud = roadster.userData;
   ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
+  ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
 }
 
 function updateThrusters(dt) {
   const ud = roadster.userData;
-  // Target intensity: burst actions + sustained inverted hold
+  if (ud.thrustHold > 0) ud.thrustHold -= dt;
+
   let target = 0;
-  if (state.hopping) target = 1;
-  else if (state.flipping) target = 1;
-  else if (state.inverted && state.running && !state.dead) target = 0.55;
-  ud.thrustLevel = THREE.MathUtils.lerp(
-    ud.thrustLevel || 0,
-    target,
-    1 - Math.pow(state.hopping || state.flipping ? 0.001 : 0.08, dt)
-  );
-  if (target > (ud.thrustLevel || 0)) ud.thrustLevel = target;
+  if (state.hopping || state.flipping) target = 1;
+  else if (ud.thrustHold > 0) target = 0.95;
+  else if (state.inverted && state.running && !state.dead) target = 0.85;
+
+  if (target >= (ud.thrustLevel || 0)) ud.thrustLevel = target;
+  else {
+    ud.thrustLevel = THREE.MathUtils.lerp(
+      ud.thrustLevel || 0,
+      target,
+      1 - Math.pow(0.12, dt)
+    );
+  }
   const lvl = ud.thrustLevel || 0;
-  const active = lvl > 0.04;
+  const active = lvl > 0.05;
 
   for (const light of ud.jetLights) {
-    light.intensity = active ? 1.2 + lvl * 2.4 : 0;
-    light.distance = 4 + lvl * 3;
+    light.intensity = active ? 2.5 + lvl * 4 : 0;
+    light.distance = 8 + lvl * 6;
     light.color.setHex(0x7dd3fc);
   }
-  ud.plumes.forEach((plume, i) => {
-    plume.visible = active;
-    plume.material.opacity = active ? 0.25 + lvl * 0.55 : 0;
-    plume.scale.setScalar(0.7 + lvl * 0.9 + Math.sin(state.time * 28 + i) * 0.06);
-  });
-  for (const disc of ud.glowDiscs) {
-    disc.visible = active;
-    disc.material.opacity = active ? 0.35 + lvl * 0.5 : 0;
-  }
 
-  // Emit a few particles per frame (world space, belly direction)
-  const { jetPos, jetVel, jetLife, jetCount, jets, body } = ud;
+  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
   body.updateWorldMatrix(true, false);
-  const bellyDir = new THREE.Vector3(0, -1, 0).applyQuaternion(body.getWorldQuaternion(new THREE.Quaternion()));
-  const origin = new THREE.Vector3();
+  body.getWorldQuaternion(_q);
+  // Belly = local −Y → floor when upright, ceiling when inverted
+  _belly.set(0, -1, 0).applyQuaternion(_q);
+
+  // Aim plumes in world space along belly (avoids body×child rotation cancel)
+  ud.plumes.forEach((p, i) => {
+    p.group.visible = active;
+    const nz = ud.nozzles[p.nozzleIndex % ud.nozzles.length];
+    nz.getWorldPosition(_origin);
+    p.group.position.copy(_origin);
+    // Cone default +Y; emit along belly (reuse _q as scratch via setFromUnitVectors)
+    p.group.quaternion.setFromUnitVectors(ud._up || (ud._up = new THREE.Vector3(0, 1, 0)), _belly);
+    const pulse = 1 + Math.sin(state.time * 26 + i * 1.7) * 0.08;
+    p.group.scale.setScalar((1.0 + lvl * 0.7) * pulse);
+    p.core.material.opacity = active ? 0.7 + lvl * 0.3 : 0;
+    p.glow.material.opacity = active ? 0.45 + lvl * 0.4 : 0;
+    p.halo.material.opacity = active ? 0.55 + lvl * 0.4 : 0;
+  });
+
   if (active) {
-    const spawnN = state.hopping || state.flipping ? 3 : 1;
+    const spawnN = state.hopping || state.flipping || ud.thrustHold > 0 ? 4 : 2;
     for (let s = 0; s < spawnN; s++) {
       let slot = -1;
       for (let i = 0; i < jetCount; i++) {
@@ -1476,17 +1620,17 @@ function updateThrusters(dt) {
           break;
         }
       }
-      if (slot < 0) slot = (Math.random() * jetCount) | 0;
+      if (slot < 0) continue;
       const nz = ud.nozzles[s % ud.nozzles.length];
-      nz.getWorldPosition(origin);
-      jetPos[slot * 3] = origin.x + (Math.random() - 0.5) * 0.15;
-      jetPos[slot * 3 + 1] = origin.y + (Math.random() - 0.5) * 0.1;
-      jetPos[slot * 3 + 2] = origin.z + (Math.random() - 0.5) * 0.15;
-      const speed = 4 + lvl * 8 + Math.random() * 3;
-      jetVel[slot * 3] = bellyDir.x * speed + (Math.random() - 0.5) * 1.2;
-      jetVel[slot * 3 + 1] = bellyDir.y * speed + (Math.random() - 0.5) * 1.2;
-      jetVel[slot * 3 + 2] = bellyDir.z * speed + (Math.random() - 0.5) * 1.2;
-      jetLife[slot] = 0.18 + Math.random() * 0.22;
+      nz.getWorldPosition(_origin);
+      jetPos[slot * 3] = _origin.x + (Math.random() - 0.5) * 0.25;
+      jetPos[slot * 3 + 1] = _origin.y + (Math.random() - 0.5) * 0.2;
+      jetPos[slot * 3 + 2] = _origin.z + (Math.random() - 0.5) * 0.25;
+      const speed = 6 + lvl * 10 + Math.random() * 4;
+      jetVel[slot * 3] = _belly.x * speed + (Math.random() - 0.5) * 2;
+      jetVel[slot * 3 + 1] = _belly.y * speed + (Math.random() - 0.5) * 2;
+      jetVel[slot * 3 + 2] = _belly.z * speed + (Math.random() - 0.5) * 2;
+      jetLife[slot] = 0.28 + Math.random() * 0.25;
     }
   }
   for (let i = 0; i < jetCount; i++) {
@@ -1498,13 +1642,11 @@ function updateThrusters(dt) {
     jetPos[i * 3] += jetVel[i * 3] * dt;
     jetPos[i * 3 + 1] += jetVel[i * 3 + 1] * dt;
     jetPos[i * 3 + 2] += jetVel[i * 3 + 2] * dt;
-    jetVel[i * 3] *= 0.96;
-    jetVel[i * 3 + 1] *= 0.96;
-    jetVel[i * 3 + 2] *= 0.96;
     if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
   }
   jets.geometry.attributes.position.needsUpdate = true;
-  jets.material.opacity = active ? 0.55 + lvl * 0.35 : 0;
+  jets.material.opacity = active ? 0.75 + lvl * 0.25 : 0;
+  jets.material.size = 0.35 + lvl * 0.35;
 }
 
 /** Fade decks between camera and car — critical when inverted under a slab. */
@@ -1599,12 +1741,13 @@ function updateCamera(dt) {
   camera.updateProjectionMatrix();
 
   const midY = (floorY(0) + ceilingY(LEVELS.length - 1)) * 0.5;
-  const backX = portrait ? -8.2 : -6.5;
-  const sideZ = portrait ? -15.5 : -12.2;
+  const inv = state.inverted || state.flipping;
+  const backX = portrait ? (inv ? -9.5 : -8.2) : -6.5;
+  const sideZ = portrait ? (inv ? -17.5 : -15.5) : (inv ? -13.5 : -12.2);
   let desiredY;
-  if (state.inverted || state.flipping) {
-    // Sit under the car / just below the ceiling slab it's stuck to
-    desiredY = state.y - (portrait ? 2.8 : 2.2);
+  if (inv) {
+    // Side-below: see the car under the deck AND belly jets shooting up into it
+    desiredY = state.y - (portrait ? 1.4 : 1.1);
   } else {
     const focusY = THREE.MathUtils.lerp(state.y, midY, 0.35);
     desiredY = focusY + (portrait ? 9.2 : 7.6);
@@ -1678,6 +1821,7 @@ function die(reason) {
   hintEl?.classList.add("hidden");
   hintState.visible = false;
   roadster.userData.thrustLevel = 0;
+  roadster.userData.thrustHold = 0;
   if (gameoverReason) gameoverReason.textContent = reason;
   if (finalTime) finalTime.textContent = state.time.toFixed(1);
   if (finalBest) finalBest.textContent = bestTime.toFixed(1) + "s";
@@ -1713,6 +1857,7 @@ function startGame() {
     roadster.position.set(0, 0, 0);
     roadster.userData.body.rotation.set(0, 0, 0);
     roadster.userData.thrustLevel = 0;
+    roadster.userData.thrustHold = 0;
     for (const w of roadster.userData.wheels) {
       w.spinner.rotation.x = 0;
       w.hub.position.y = w.baseY;
@@ -1889,13 +2034,23 @@ window.__ROADSTER__ = {
     reason: state.reason,
     invuln: state.invuln,
     bestTime,
+    thrustLevel: roadster.userData.thrustLevel || 0,
+    thrustHold: roadster.userData.thrustHold || 0,
+    thrustVisible: (roadster.userData.plumes || []).some((p) => p.group.visible),
   }),
   pressUp: () => { input.up = true; },
   pressDown: () => { input.down = true; },
   pressFlip: () => { input.flip = true; },
-  // Back-compat aliases for older harnesses
   pressJump: () => { input.up = true; },
   pressDrop: () => { input.down = true; },
+  validateGapPlan,
+  minOverlapDist,
+  /** Force-generate columns ahead so the plan can be validated far out. */
+  extendPlan(cols = 40) {
+    const start = nextSegmentX;
+    for (let i = 0; i < cols; i++) spawnSegment(nextSegmentX);
+    return { from: start, to: nextSegmentX, ...validateGapPlan() };
+  },
   setLevel(level, inverted = false) {
     const li = Math.max(0, Math.min(LEVELS.length - 1, level | 0));
     state.level = li;
