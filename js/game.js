@@ -401,51 +401,136 @@ const BUILDING_PALETTE = [
 ];
 
 /* ── Roadster: placeholder + async GLTF ───────────────────── */
+/**
+ * SpaceX-package rear cold-gas thruster bay (Oct 2026 McGregor press photos):
+ * dark matte diffuser bay, 4 primary downward nozzles (−Y) with tip flare,
+ * 4 smaller idle ports above, brilliant white vapor (not fire).
+ */
 function createEmptyThrusterData(body) {
+  const thrusterBay = new THREE.Group();
+  thrusterBay.name = "thrusterBay";
+  // Placeholder rear-belly placement; refined after GLTF bbox.
+  thrusterBay.position.set(-2.0, 0.12, 0);
+  body.add(thrusterBay);
+
+  const bayMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1c1e,
+    metalness: 0.55,
+    roughness: 0.78,
+  });
+  const bayPlate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 1.05), bayMat);
+  bayPlate.position.set(0.05, 0.02, 0);
+  thrusterBay.add(bayPlate);
+
+  const nozzleMat = new THREE.MeshStandardMaterial({
+    color: 0x8a949e,
+    metalness: 0.92,
+    roughness: 0.28,
+  });
+  const flareMat = new THREE.MeshStandardMaterial({
+    color: 0xa8b0b8,
+    metalness: 0.95,
+    roughness: 0.22,
+  });
+  const portRingMat = new THREE.MeshStandardMaterial({
+    color: 0x9aa4ae,
+    metalness: 0.9,
+    roughness: 0.3,
+  });
+  const portFillMat = new THREE.MeshStandardMaterial({
+    color: 0x0c0e10,
+    metalness: 0.4,
+    roughness: 0.85,
+  });
+
+  // Primary nozzles: horizontal row across local Z, axis along −Y (body down).
+  // Outer pair slightly larger / more prominent.
+  const primaryZ = [-0.38, -0.15, 0.15, 0.38];
+  const primaryR = [0.055, 0.045, 0.045, 0.055];
   const nozzles = [];
   const jetLights = [];
-  const nozzleMat = new THREE.MeshStandardMaterial({
-    color: 0x4a5560,
-    metalness: 0.9,
-    roughness: 0.25,
-  });
-  // Body-local offsets under rear belly (forward = +X). Parent to body → works inverted.
-  const offsets = [
-    [-1.9, 0.14, -0.34],
-    [-1.9, 0.14, 0.34],
-    [-2.12, 0.2, -0.16],
-    [-2.12, 0.2, 0.16],
-  ];
+
   for (let i = 0; i < 4; i++) {
-    const nz = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.18, 10), nozzleMat);
-    nz.rotation.z = Math.PI / 2;
-    nz.position.fromArray(offsets[i]);
-    body.add(nz);
+    const nz = new THREE.Group();
+    const r = primaryR[i];
+    const barrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(r * 0.92, r, 0.14, 12),
+      nozzleMat
+    );
+    // Cylinder default axis = +Y; tip (larger radius) toward −Y exit.
+    barrel.position.y = -0.02;
+    nz.add(barrel);
+    const flare = new THREE.Mesh(
+      new THREE.CylinderGeometry(r * 1.35, r * 0.95, 0.045, 12),
+      flareMat
+    );
+    flare.position.y = -0.105;
+    nz.add(flare);
+    nz.position.set(0.02, -0.04, primaryZ[i]);
+    thrusterBay.add(nz);
     nozzles.push(nz);
-    const jet = new THREE.PointLight(0xdbeafe, 0, 4);
-    jet.position.set(offsets[i][0] - 0.15, offsets[i][1], offsets[i][2]);
-    body.add(jet);
+
+    const jet = new THREE.PointLight(0xeef4fa, 0, 3.2);
+    jet.position.set(0.02, -0.16, primaryZ[i]);
+    thrusterBay.add(jet);
     jetLights.push(jet);
   }
 
+  // Secondary idle/ports: smaller metallic-rimmed circles above (+Y) and slightly forward (+X).
+  const secondaryPorts = [];
+  const secondaryZ = [-0.34, -0.12, 0.12, 0.34];
+  for (let i = 0; i < 4; i++) {
+    const port = new THREE.Group();
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.028, 0.006, 8, 16),
+      portRingMat
+    );
+    ring.rotation.x = Math.PI / 2;
+    port.add(ring);
+    const fill = new THREE.Mesh(new THREE.CircleGeometry(0.024, 12), portFillMat);
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.y = 0.001;
+    port.add(fill);
+    port.position.set(0.12, 0.06, secondaryZ[i]);
+    thrusterBay.add(port);
+    secondaryPorts.push(port);
+  }
+
+  // Plume groups (API: anyThrustVisible) — short semi-transparent cone cores along −Y.
   const plumes = [];
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
     group.position.copy(nozzles[i].position);
-    group.position.x -= 0.12;
+    group.position.y -= 0.12;
+    const core = new THREE.Mesh(
+      new THREE.ConeGeometry(0.04, 0.22, 8, 1, true),
+      coreMat.clone()
+    );
+    // Cone tip along +Y by default; rotate so jet shoots −Y.
+    core.rotation.x = Math.PI;
+    core.position.y = -0.08;
+    group.add(core);
     group.visible = false;
-    body.add(group);
-    plumes.push({ group, core: group, glow: group });
+    thrusterBay.add(group);
+    plumes.push({ group, core, glow: core });
   }
 
-  // Soft vapor sprite pool (world-space)
-  const vaporCount = QUALITY === "low" ? 40 : 56;
+  // Soft vapor sprite pool (world-space): core jets + billow cloud
+  const vaporCount = QUALITY === "low" ? 48 : 72;
   const vaporSprites = [];
   const vaporLife = new Float32Array(vaporCount);
   const vaporVel = new Float32Array(vaporCount * 3);
+  const vaporKind = new Uint8Array(vaporCount); // 0 = core, 1 = billow
   const vaporMatBase = {
     map: null,
-    color: 0xf2f5f8,
+    color: 0xffffff,
     transparent: true,
     opacity: 0,
     depthTest: true,
@@ -456,13 +541,14 @@ function createEmptyThrusterData(body) {
     const mat = new THREE.SpriteMaterial({ ...vaporMatBase });
     const spr = new THREE.Sprite(mat);
     spr.visible = false;
-    spr.scale.set(0.2, 0.2, 0.2);
+    spr.scale.set(0.15, 0.15, 0.15);
     scene.add(spr);
     vaporSprites.push(spr);
     vaporLife[i] = 0;
+    vaporKind[i] = 0;
   }
 
-  // Optional subtle Points trail
+  // Optional subtle Points trail along primary jets
   const jetCount = 28;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
@@ -476,20 +562,22 @@ function createEmptyThrusterData(body) {
   const jets = new THREE.Points(
     jetGeo,
     new THREE.PointsMaterial({
-      color: 0xdce7f0,
-      size: 0.1,
+      color: 0xffffff,
+      size: 0.08,
       transparent: true,
       opacity: 0,
       depthTest: true,
       depthWrite: false,
-      blending: THREE.NormalBlending,
+      blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
     })
   );
   jets.frustumCulled = false;
 
   return {
+    thrusterBay,
     nozzles,
+    secondaryPorts,
     jetLights,
     plumes,
     jets,
@@ -500,11 +588,13 @@ function createEmptyThrusterData(body) {
     vaporSprites,
     vaporLife,
     vaporVel,
+    vaporKind,
     vaporCount,
     thrustLevel: 0,
     thrustHold: 0,
     _q: new THREE.Quaternion(),
     _belly: new THREE.Vector3(),
+    _side: new THREE.Vector3(),
     _origin: new THREE.Vector3(),
   };
 }
@@ -753,26 +843,32 @@ async function loadRoadsterModel(root) {
     }
   }
 
-  // Refine nozzle placement from model bbox (rear belly)
+  // SpaceX-package thruster bay: rear diffuser undercarriage (body −X after Y-rot)
   model.updateMatrixWorld(true);
   const boxBody = new THREE.Box3().setFromObject(model);
-  const nx = boxBody.min.x + 0.2;
-  const ny = boxBody.min.y + 0.12;
-  const zSpan = (boxBody.max.z - boxBody.min.z) * 0.22;
-  const nozzlePos = [
-    [nx, ny, -zSpan],
-    [nx, ny, zSpan],
-    [nx - 0.18, ny + 0.06, -zSpan * 0.45],
-    [nx - 0.18, ny + 0.06, zSpan * 0.45],
-  ];
+  const bay = root.userData.thrusterBay;
+  if (bay) {
+    bay.position.set(
+      boxBody.min.x + 0.25,
+      boxBody.min.y + 0.05,
+      0
+    );
+  }
+  // Primary nozzles: horizontal row across rear (local Z), pointing −Y
+  const primaryZ = [-0.38, -0.15, 0.15, 0.38];
   root.userData.nozzles.forEach((nz, i) => {
-    nz.position.fromArray(nozzlePos[i]);
+    nz.position.set(0.02, -0.04, primaryZ[i]);
   });
   root.userData.jetLights.forEach((light, i) => {
-    light.position.set(nozzlePos[i][0] - 0.12, nozzlePos[i][1], nozzlePos[i][2]);
+    light.position.set(0.02, -0.16, primaryZ[i]);
   });
   root.userData.plumes.forEach((p, i) => {
-    p.group.position.set(nozzlePos[i][0] - 0.1, nozzlePos[i][1], nozzlePos[i][2]);
+    p.group.position.set(0.02, -0.16, primaryZ[i]);
+  });
+  // Secondary ports: slightly higher (+Y) and forward (+X)
+  const secondaryZ = [-0.34, -0.12, 0.12, 0.34];
+  (root.userData.secondaryPorts || []).forEach((port, i) => {
+    port.position.set(0.14, 0.07, secondaryZ[i]);
   });
 
   const height = boxBody.max.y - boxBody.min.y;
@@ -1970,8 +2066,8 @@ function updateTrains(dt) {
 
 
 /**
- * Thrusters (visual only). Cold-gas condensation vapor — no fire/orange.
- * Soft textured sprites expand and fade from belly nozzles (body-parented).
+ * Thrusters (visual only). Brilliant opaque white cold-gas vapor —
+ * tight high-pressure core at nozzle → billowy dry-ice cloud (no fire/orange).
  */
 function burstThrusters(amount = 1, hold = 0.45) {
   const ud = roadster.userData;
@@ -1979,35 +2075,72 @@ function burstThrusters(amount = 1, hold = 0.45) {
   ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
 }
 
-function spawnVapor(ud, lvl) {
-  const { vaporSprites, vaporLife, vaporVel, vaporCount, nozzles, _q, _belly, _origin, body } =
-    ud;
-  if (!vaporSprites || !vaporSprites.length) return;
-  let slot = -1;
+function claimVaporSlot(ud) {
+  const { vaporLife, vaporCount } = ud;
   for (let i = 0; i < vaporCount; i++) {
-    if (vaporLife[i] <= 0) {
-      slot = i;
-      break;
-    }
+    if (vaporLife[i] <= 0) return i;
   }
+  return -1;
+}
+
+/** kind: 0 = tight core jet, 1 = billowy expansion cloud */
+function spawnVapor(ud, lvl, kind = 1) {
+  const {
+    vaporSprites,
+    vaporLife,
+    vaporVel,
+    vaporKind,
+    nozzles,
+    _belly,
+    _side,
+    _origin,
+  } = ud;
+  if (!vaporSprites || !vaporSprites.length) return;
+  const slot = claimVaporSlot(ud);
   if (slot < 0) return;
+
   const nz = nozzles[slot % nozzles.length];
   nz.getWorldPosition(_origin);
+  // Emit from nozzle tip (slightly along −Y / belly)
+  _origin.addScaledVector(_belly, 0.06);
+
   const spr = vaporSprites[slot];
-  spr.position.set(
-    _origin.x + (Math.random() - 0.5) * 0.1,
-    _origin.y + (Math.random() - 0.5) * 0.06,
-    _origin.z + (Math.random() - 0.5) * 0.1
-  );
-  const jetSpeed = 2.2 + lvl * 3.5;
-  vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.75;
-  vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.5;
-  vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.5;
-  vaporLife[slot] = 0.28 + Math.random() * 0.22;
-  const base = 0.28 + lvl * 0.28;
-  spr.scale.setScalar(base);
-  spr.material.opacity = 0.7 + lvl * 0.35;
-  spr.material.color.setHex(Math.random() > 0.45 ? 0xffffff : 0xd4dae2);
+  vaporKind[slot] = kind;
+
+  if (kind === 0) {
+    // Core: small bright white, high speed along belly, short life, little spread
+    spr.position.set(
+      _origin.x + (Math.random() - 0.5) * 0.04,
+      _origin.y + (Math.random() - 0.5) * 0.03,
+      _origin.z + (Math.random() - 0.5) * 0.04
+    );
+    const jetSpeed = 5.5 + lvl * 5.5;
+    vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.55;
+    vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.25;
+    vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.25;
+    vaporLife[slot] = 0.1 + Math.random() * 0.08;
+    spr.scale.setScalar(0.12 + lvl * 0.08);
+    spr.material.opacity = 0.95 + lvl * 0.05;
+    spr.material.color.setHex(0xffffff);
+    spr.material.blending = THREE.AdditiveBlending;
+  } else {
+    // Billow: larger, slower, expands fast — sideways scatter late in life (update)
+    spr.position.set(
+      _origin.x + (Math.random() - 0.5) * 0.12,
+      _origin.y + (Math.random() - 0.5) * 0.08,
+      _origin.z + (Math.random() - 0.5) * 0.12
+    );
+    const jetSpeed = 1.6 + lvl * 2.4;
+    const scatter = 0.35 + lvl * 0.25;
+    vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.7 + (Math.random() - 0.5) * scatter;
+    vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * scatter * 0.6;
+    vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * scatter;
+    vaporLife[slot] = 0.45 + Math.random() * 0.35;
+    spr.scale.setScalar(0.35 + lvl * 0.35);
+    spr.material.opacity = 0.75 + lvl * 0.25;
+    spr.material.color.setHex(Math.random() > 0.35 ? 0xffffff : 0xeef2f6);
+    spr.material.blending = THREE.NormalBlending;
+  }
   spr.visible = true;
 }
 
@@ -2029,27 +2162,43 @@ function updateThrusters(dt) {
   const active = lvl > 0.04;
 
   for (const light of ud.jetLights) {
-    light.intensity = active ? 0.35 + lvl * 0.9 : 0;
-    light.distance = 2.8 + lvl * 1.5;
-    light.color.setHex(0xe2e8f0);
+    light.intensity = active ? 0.2 + lvl * 0.55 : 0;
+    light.distance = 2.4 + lvl * 1.2;
+    light.color.setHex(0xeef4fa);
   }
 
   ud.plumes.forEach((p) => {
     p.group.visible = active;
+    if (p.core?.material) {
+      p.core.material.opacity = active ? 0.35 + lvl * 0.4 : 0;
+    }
   });
 
-  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
+  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _side, _origin } = ud;
   body.updateWorldMatrix(true, false);
   body.getWorldQuaternion(_q);
   _belly.set(0, -1, 0).applyQuaternion(_q);
+  _side.set(0, 0, 1).applyQuaternion(_q);
 
   if (active) {
     const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
-    const spawnN = burst ? (QUALITY === "low" ? 2 : 3) : 1;
-    for (let s = 0; s < spawnN; s++) spawnVapor(ud, lvl);
+    const invertedSustain = state.inverted && state.running && !state.dead;
+    // More spawn during hop/flip burst; sustained when inverted
+    const coreN = burst ? (QUALITY === "low" ? 2 : 3) : invertedSustain ? 1 : 1;
+    const billowN = burst
+      ? QUALITY === "low"
+        ? 2
+        : 4
+      : invertedSustain
+        ? QUALITY === "low"
+          ? 1
+          : 2
+        : 1;
+    for (let s = 0; s < coreN; s++) spawnVapor(ud, lvl, 0);
+    for (let s = 0; s < billowN; s++) spawnVapor(ud, lvl, 1);
 
-    // Subtle points
-    for (let s = 0; s < (burst ? 1 : 0); s++) {
+    // Subtle points along primary jets
+    for (let s = 0; s < (burst ? 2 : 1); s++) {
       let slot = -1;
       for (let i = 0; i < jetCount; i++) {
         if (jetLife[i] <= 0) {
@@ -2060,19 +2209,20 @@ function updateThrusters(dt) {
       if (slot < 0) continue;
       const nz = ud.nozzles[s % ud.nozzles.length];
       nz.getWorldPosition(_origin);
+      _origin.addScaledVector(_belly, 0.05);
       jetPos[slot * 3] = _origin.x;
       jetPos[slot * 3 + 1] = _origin.y;
       jetPos[slot * 3 + 2] = _origin.z;
-      const jetSpeed = 3 + lvl * 3;
-      jetVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.85;
+      const jetSpeed = 4.5 + lvl * 4;
+      jetVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.75;
       jetVel[slot * 3 + 1] = _belly.y * jetSpeed;
       jetVel[slot * 3 + 2] = _belly.z * jetSpeed;
-      jetLife[slot] = 0.1 + Math.random() * 0.08;
+      jetLife[slot] = 0.08 + Math.random() * 0.06;
     }
   }
 
-  // Update vapor sprites
-  const { vaporSprites, vaporLife, vaporVel, vaporCount } = ud;
+  // Update vapor sprites — core stays tight; billow expands + sideways near end of life
+  const { vaporSprites, vaporLife, vaporVel, vaporKind, vaporCount } = ud;
   for (let i = 0; i < vaporCount; i++) {
     if (vaporLife[i] <= 0) {
       vaporSprites[i].visible = false;
@@ -2080,13 +2230,32 @@ function updateThrusters(dt) {
     }
     vaporLife[i] -= dt;
     const spr = vaporSprites[i];
+    const isCore = vaporKind[i] === 0;
+    const lifeLeft = vaporLife[i];
+
+    if (!isCore && lifeLeft < 0.22) {
+      // Near end of life / near ground: billow outward like dry-ice fog
+      const push = (0.22 - lifeLeft) * 4.5;
+      vaporVel[i * 3] += _side.x * (Math.random() - 0.5) * push * dt * 8;
+      vaporVel[i * 3 + 1] += (Math.random() - 0.5) * push * dt * 3;
+      vaporVel[i * 3 + 2] += _side.z * (Math.random() - 0.5) * push * dt * 8;
+      // Soften downward drift so fog pools
+      vaporVel[i * 3] *= 1 - dt * 0.8;
+      vaporVel[i * 3 + 1] *= 1 - dt * 1.2;
+      vaporVel[i * 3 + 2] *= 1 - dt * 0.8;
+    }
+
     spr.position.x += vaporVel[i * 3] * dt;
     spr.position.y += vaporVel[i * 3 + 1] * dt;
     spr.position.z += vaporVel[i * 3 + 2] * dt;
-    // Expand and fade quickly
-    const grow = 1 + dt * 3.2;
-    spr.scale.multiplyScalar(grow);
-    spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.8);
+
+    if (isCore) {
+      spr.scale.multiplyScalar(1 + dt * 1.2);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 6.5);
+    } else {
+      spr.scale.multiplyScalar(1 + dt * 4.8);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 1.6);
+    }
     if (vaporLife[i] <= 0 || spr.material.opacity < 0.02) {
       vaporLife[i] = 0;
       spr.visible = false;
@@ -2106,8 +2275,8 @@ function updateThrusters(dt) {
     if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
   }
   jets.geometry.attributes.position.needsUpdate = true;
-  jets.material.opacity = active ? 0.25 + lvl * 0.2 : 0;
-  jets.material.size = 0.08 + lvl * 0.08;
+  jets.material.opacity = active ? 0.35 + lvl * 0.35 : 0;
+  jets.material.size = 0.06 + lvl * 0.06;
 }
 
 function anyThrustVisible() {
