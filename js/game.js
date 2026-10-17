@@ -468,9 +468,19 @@ function createRoadster() {
   jets.renderOrder = 1003;
   root.add(jets);
 
+  // Big hold flare between car and ceiling — readable on portrait mobile
+  const holdFlare = new THREE.Mesh(
+    new THREE.SphereGeometry(0.7, 12, 10),
+    mkThrustMat(0x7dd3fc, 0)
+  );
+  holdFlare.renderOrder = 1004;
+  holdFlare.visible = false;
+  root.add(holdFlare);
+
   const _q = new THREE.Quaternion();
   const _belly = new THREE.Vector3();
   const _origin = new THREE.Vector3();
+  const _up = new THREE.Vector3(0, 1, 0);
 
   root.userData = {
     body,
@@ -479,6 +489,7 @@ function createRoadster() {
     jetLights,
     plumes,
     jets,
+    holdFlare,
     jetPos,
     jetVel,
     jetLife,
@@ -488,6 +499,7 @@ function createRoadster() {
     _q,
     _belly,
     _origin,
+    _up,
   };
   return root;
 }
@@ -1602,13 +1614,25 @@ function updateThrusters(dt) {
     nz.getWorldPosition(_origin);
     p.group.position.copy(_origin);
     // Cone default +Y; emit along belly (reuse _q as scratch via setFromUnitVectors)
-    p.group.quaternion.setFromUnitVectors(ud._up || (ud._up = new THREE.Vector3(0, 1, 0)), _belly);
+    p.group.quaternion.setFromUnitVectors(ud._up, _belly);
     const pulse = 1 + Math.sin(state.time * 26 + i * 1.7) * 0.08;
-    p.group.scale.setScalar((1.0 + lvl * 0.7) * pulse);
-    p.core.material.opacity = active ? 0.7 + lvl * 0.3 : 0;
-    p.glow.material.opacity = active ? 0.45 + lvl * 0.4 : 0;
-    p.halo.material.opacity = active ? 0.55 + lvl * 0.4 : 0;
+    p.group.scale.setScalar((1.15 + lvl * 0.85) * pulse);
+    p.core.material.opacity = active ? 0.85 + lvl * 0.15 : 0;
+    p.glow.material.opacity = active ? 0.55 + lvl * 0.4 : 0;
+    p.halo.material.opacity = active ? 0.65 + lvl * 0.35 : 0;
   });
+
+  if (ud.holdFlare) {
+    const showFlare = active && (state.inverted || state.flipping || ud.thrustHold > 0);
+    ud.holdFlare.visible = showFlare;
+    if (showFlare) {
+      roadster.getWorldPosition(_origin);
+      ud.holdFlare.position.copy(_origin).addScaledVector(_belly, 1.1);
+      ud.holdFlare.material.opacity = 0.35 + lvl * 0.45;
+      const fs = 0.9 + lvl * 1.1 + Math.sin(state.time * 20) * 0.12;
+      ud.holdFlare.scale.setScalar(fs);
+    }
+  }
 
   if (active) {
     const spawnN = state.hopping || state.flipping || ud.thrustHold > 0 ? 4 : 2;
