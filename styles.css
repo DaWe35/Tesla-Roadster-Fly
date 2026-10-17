@@ -142,9 +142,14 @@ body {
   opacity: 0;
 }
 
-#flip-btn:active,
+#flip-btn:active {
+  transform: scale(0.94);
+}
 #flip-btn.active {
-  transform: scale(0.94) rotate(180deg);
+  /* Inverted state — glow only; do not flip the label text */
+  box-shadow: 0 8px 28px rgba(14, 165, 233, 0.65), 0 0 0 3px rgba(255, 255, 255, 0.25);
+  filter: brightness(1.12);
+}
   filter: brightness(1.15);
 }
 

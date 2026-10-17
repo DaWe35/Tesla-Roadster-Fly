@@ -602,28 +602,28 @@ function buildRoadster2026() {
   const model = new THREE.Group();
   model.name = "tesla-roadster-2026";
 
-  // Faceted wedge body from flat panels (Cybertruck / Countach spirit)
-  // Nose tip (pointed)
-  addBox(model, mats.paint, 0.55, 0.16, 0.55, 1.95, 0.28, 0, 0, 0, -0.25);
-  addBox(model, mats.paint, 0.7, 0.18, 1.1, 1.65, 0.32, 0, 0, 0, -0.12);
-  // Hood / front deck (wide flat)
-  addBox(model, mats.paint, 1.1, 0.14, 1.75, 1.0, 0.4, 0, 0, 0, -0.05);
-  // Front fenders (angular shoulders)
+  // Faceted wedge body — sharp flat panels (Cybertruck / Countach)
+  // Long pointed nose (stacked tapering flats)
+  addBox(model, mats.paint, 0.4, 0.12, 0.35, 2.05, 0.26, 0, 0, 0, -0.35);
+  addBox(model, mats.paint, 0.55, 0.14, 0.7, 1.85, 0.3, 0, 0, 0, -0.22);
+  addBox(model, mats.paint, 0.75, 0.16, 1.15, 1.55, 0.34, 0, 0, 0, -0.12);
+  // Hood — wide flat with crease
+  addBox(model, mats.paint, 1.0, 0.12, 1.7, 0.95, 0.42, 0, 0, 0, -0.04);
+  addBox(model, mats.paint, 1.0, 0.04, 0.06, 0.95, 0.49, 0); // center crease
+  // Angular front fenders
   for (const s of [-1, 1]) {
-    addBox(model, mats.paint, 0.9, 0.22, 0.35, 1.15, 0.42, s * 0.85, 0, s * 0.08, -0.05);
+    addBox(model, mats.paint, 0.95, 0.24, 0.32, 1.1, 0.44, s * 0.9, 0, s * 0.12, -0.06);
   }
-  // Cabin belt / waist
-  addBox(model, mats.paint, 1.6, 0.28, 1.9, -0.15, 0.55, 0);
-  // Roof slab (low, flat, cab-forward)
-  addBox(model, mats.paint, 1.15, 0.1, 1.5, -0.45, 0.98, 0);
-  // Rear deck
-  addBox(model, mats.paint, 0.7, 0.16, 1.7, -1.45, 0.58, 0, 0, 0, 0.08);
-  // Rear haunches
+  // Cabin belt
+  addBox(model, mats.paint, 1.55, 0.26, 1.95, -0.2, 0.56, 0);
+  // Low flat roof (cab-forward)
+  addBox(model, mats.paint, 1.05, 0.08, 1.45, -0.5, 1.0, 0);
+  // Rear deck + haunches
+  addBox(model, mats.paint, 0.65, 0.14, 1.65, -1.5, 0.6, 0, 0, 0, 0.1);
   for (const s of [-1, 1]) {
-    addBox(model, mats.paint, 0.75, 0.28, 0.38, -1.35, 0.52, s * 0.88, 0, -s * 0.06, 0.1);
+    addBox(model, mats.paint, 0.7, 0.3, 0.36, -1.4, 0.54, s * 0.92, 0, -s * 0.08, 0.12);
   }
-  // Rear fascia
-  addBox(model, mats.paint, 0.2, 0.35, 1.75, -1.95, 0.4, 0);
+  addBox(model, mats.paint, 0.22, 0.38, 1.8, -2.0, 0.42, 0);
 
   // Lower black cladding / side skirts full length
   addBox(model, mats.black, 4.0, 0.16, 1.95, 0.0, 0.14, 0);
@@ -1856,12 +1856,12 @@ function createDeckSurface(levelIndex, zCenter) {
     // All Ys distinct from road top (ly+0.02) and from ground strips (y≤−0.3).
     // UV scale ≈ real-world: cobble ~0.2 m tiles, concrete panels ~1 m.
     const roadHalf = width / 2; // 5.0
-    const curbW = 0.28;
-    const walkW = 2.2;
-    const apronW = 1.8;
-    const curbTop = ly + 0.32; // clearly raised vertical face above road
-    const walkTop = ly + 0.26;
-    const apronTop = ly + 0.02;
+    const curbW = 0.32;
+    const walkW = 2.4;
+    const apronW = 1.5;
+    const curbTop = ly + 0.45; // tall vertical face readable from chase cam
+    const walkTop = ly + 0.28;
+    const apronTop = ly - 0.05;
 
     const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 4, 0.5, {
       color: 0xc2c0ba,
@@ -1894,16 +1894,13 @@ function createDeckSurface(levelIndex, zCenter) {
 
     for (const side of [-1, 1]) {
       const s = side;
-      // Curb block with visible vertical face toward the road
+      // Curb block with tall vertical face toward the road (chase-cam readable)
+      const curbH = curbTop - (ly - 0.08);
       const curb = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, curbTop - (ly - 0.05), curbW),
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, curbH, curbW),
         curbMat
       );
-      curb.position.set(
-        0,
-        (curbTop + (ly - 0.05)) / 2,
-        s * (roadHalf + curbW / 2)
-      );
+      curb.position.set(0, ly - 0.08 + curbH / 2, s * (roadHalf + curbW / 2));
       curb.castShadow = true;
       curb.receiveShadow = true;
       g.add(curb);
@@ -1979,20 +1976,19 @@ function createDeckSurface(levelIndex, zCenter) {
           g.add(win);
         }
       } else {
-        // Camera side: open plaza beyond apron (asphalt, fine UV) — no wall
-        const plazaZ = roadHalf + curbW + walkW + apronW + 1.2;
-        const plazaMat = pbrFrom(maps.asphalt, SEGMENT_LEN / 1.2, 2.5 / 1.2, {
-          color: 0x7a7e84,
-          roughness: 0.94,
-          metalness: 0.03,
-          envMapIntensity: 0.12,
-          normalScale: new THREE.Vector2(0.8, 0.8),
+        // Camera side: quiet dark asphalt strip beyond apron (no noisy gravel)
+        const plazaZ = roadHalf + curbW + walkW + apronW + 1.0;
+        const plazaMat = new THREE.MeshStandardMaterial({
+          color: 0x5a5e64,
+          roughness: 0.92,
+          metalness: 0.04,
+          envMapIntensity: 0.15,
         });
         const plaza = new THREE.Mesh(
-          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.1, 2.4),
+          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.08, 2.0),
           plazaMat
         );
-        plaza.position.set(0, -0.12, -plazaZ);
+        plaza.position.set(0, -0.18, -plazaZ);
         plaza.receiveShadow = true;
         g.add(plaza);
       }
