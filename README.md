@@ -1,8 +1,8 @@
 # Roadster Rise / Roadster Emelkedés
 
-A bright 3D browser runner starring the **2026 Tesla Roadster**. You do **not** switch left/right lanes — you climb and drop between **stacked city levels** (street → elevated track → rooftops) using jumps and SpaceX-style cold-gas thrusters.
+A bright 3D browser runner starring the **2026 Tesla Roadster**. No left/right lanes — change **stacked levels**, and **flip onto glowing light beams** to cross the gaps between segments.
 
-Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sávváltás balra/jobbra — **szintek között** mozogsz (utca → magasított pálya → tető), ugrással és hideg-gázos thrusterrel.
+Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sávváltás — **szintek között** lépsz, és **fényhídon** (fejjel lefelé) kelhetsz át a szakadékokon.
 
 ---
 
@@ -10,39 +10,30 @@ Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sáv
 
 ### How to run
 
-No build step. **Do not open `index.html` as a file:// URL** — browsers block ES modules that way. Serve the folder with any static server, or use GitHub Pages (Settings → Pages → Source: GitHub Actions).
+No build step. **Do not open `index.html` as a file:// URL.** Serve over HTTP or GitHub Pages (Settings → Pages → Source: GitHub Actions).
 
 ```bash
-# Python
 python3 -m http.server 8080
-
-# Node
-npx --yes serve -l 8080
 ```
 
-Then open `http://localhost:8080` and click **START RUN**.
-
-Smoke test: `http://localhost:8080/?autostart=1`  
-Verify harness (needs puppeteer): `node scripts/verify-start.mjs`
+Open `http://localhost:8080` → **START RUN**.
 
 ### How to play
 
 | Control | Action |
 |--------|--------|
-| `Space` / `↑` / swipe up | Jump / rise toward a higher level |
-| `↓` / swipe down | Drop to a lower level (or dive while airborne) |
-| `Shift` / THRUST button | Cold-gas thruster (limited fuel) |
-| — | Fuel refills on solid ground and from cyan pickups |
+| `↑` / `Space` / `W` / swipe up | Move one level up |
+| `↓` / `S` / swipe down | Move one level down |
+| `Shift` / **FLIP** | Flip to the ceiling (beams light up) or back to the floor |
 
-**Score** = survival time (seconds). Best time is stored in `localStorage`.
+**Gaps** separate the path on every level. Crossing a gap upright = crash. While **inverted**, a glowing **light-beam bridge** spans each gap — ride it across, then flip upright again.
 
-**Obstacles:** trains (land on their roofs), low bridges, tunnels, barriers, and gaps between deck segments. Speed ramps up gradually — a new player should often survive **30+ seconds**.
+**Score** = survival time (`localStorage` best). Obstacles sit on floors and ceilings. Speed ramps gently so a new player can often last **30+ seconds**.
 
 ### Tech
 
-- Plain HTML / CSS / JS
-- [three.js](https://threejs.org/) via CDN ESM import map
-- Works on a static host and GitHub Pages (workflow in `.github/workflows/pages.yml`)
+- Plain HTML / CSS / JS · three.js at `vendor/three.module.js`
+- Pages workflow: `.github/workflows/pages.yml`
 
 ---
 
@@ -50,29 +41,18 @@ Verify harness (needs puppeteer): `node scripts/verify-start.mjs`
 
 ### Futtatás
 
-Nincs build. **Ne file://-ként nyisd meg** — ES modulok miatt kell HTTP szerver. GitHub Pages: Settings → Pages → Source: GitHub Actions.
-
 ```bash
 python3 -m http.server 8080
 ```
 
-Majd: `http://localhost:8080` → **START RUN**.
+`http://localhost:8080` → **START RUN**.
 
 ### Játékmenet
 
 | Irányítás | Hatás |
 |-----------|--------|
-| `Space` / `↑` / swipe fel | Ugrás / emelkedés felsőbb szintre |
-| `↓` / swipe le | Ejtés alsóbb szintre |
-| `Shift` / THRUST gomb | Thruster (korlátozott gáz) |
-| — | A gáz a talajon és a ciánkék felvehetőkből töltődik |
+| `↑` / `Space` / swipe fel | Egy szinttel feljebb |
+| `↓` / `S` / swipe le | Egy szinttel lejjebb |
+| `Shift` / FLIP | Plafonra fordulás — megjelennek a fényhidak a szakadékokon |
 
-**Pontszám** = túlélési idő. A legjobb idő `localStorage`-ban marad.
-
-**Akadályok:** vonatok (a tetejükre lehet landolni), alacsony hidak, alagutak, korlátok, szakadékok. A sebesség fokozatosan nő — egy új játékosnak gyakran **30+ másodpercig** kell bírnia.
-
-### Technológia
-
-- Tiszta HTML / CSS / JS
-- three.js CDN-ről (ESM)
-- GitHub Pages workflow: `.github/workflows/pages.yml`
+A szakadékot **csak fejjel lefelé, fényhídon** lehet átkelni.
