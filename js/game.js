@@ -1583,38 +1583,36 @@ function createDeckSurface(levelIndex, zCenter) {
     underStripe.castShadow = true;
     g.add(underStripe);
 
-    // Soffit detail: beam ribs, expansion joints, recessed lights
+    // Soffit detail: cool-gray concrete ribs (not wood-brown)
     const soffitY = ly - 0.55 - 0.02;
-    const beamMat = pbrFrom(maps.concretePanel, 0.4, width / 3, {
-      color: 0xa8b0ba, // cool concrete — avoid wood-brown tint
-      roughness: 0.82,
-      metalness: 0.08,
-      envMapIntensity: 0.4,
-      normalScale: new THREE.Vector2(1.0, 1.0),
+    const beamMat = pbrFrom(maps.concreteWall, 0.35, width / 4, {
+      color: 0xb4bcc6,
+      roughness: 0.92,
+      metalness: 0.04,
+      envMapIntensity: 0.22,
+      normalScale: new THREE.Vector2(0.7, 0.7),
     });
     cutawayMats.push(beamMat);
-    // Deeper ribs so inverted chase cam clearly reads bridge structure
     const nBeams = QUALITY === "low" ? 5 : 7;
     for (let i = 0; i < nBeams; i++) {
       const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(0.38, 0.42, width + 0.45),
+        new THREE.BoxGeometry(0.34, 0.36, width + 0.35),
         beamMat
       );
       beam.position.set(
         -SEGMENT_LEN / 2 + 2.2 + i * (SEGMENT_LEN / (nBeams + 0.35)),
-        soffitY - 0.22,
+        soffitY - 0.2,
         0
       );
       beam.castShadow = true;
       g.add(beam);
     }
-    // Twin longitudinal ribs
     for (const z of [-width * 0.22, width * 0.22]) {
       const longRib = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.28, 0.32),
+        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.24, 0.28),
         beamMat
       );
-      longRib.position.set(0, soffitY - 0.18, z);
+      longRib.position.set(0, soffitY - 0.16, z);
       g.add(longRib);
     }
 
@@ -1688,10 +1686,11 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(canopy);
 
     // Canopy soffit ribs + lights (visible when inverted on roof)
-    const canBeamMat = pbrFrom(maps.concretePanel, 0.4, width / 3, {
-      color: 0x9aa3ae,
-      roughness: 0.72,
-      metalness: 0.2,
+    const canBeamMat = pbrFrom(maps.concreteWall, 0.4, width / 3, {
+      color: 0xb0b8c0,
+      roughness: 0.9,
+      metalness: 0.05,
+      envMapIntensity: 0.22,
     });
     cutawayMats.push(canBeamMat);
     for (let i = 0; i < 5; i++) {
@@ -1761,23 +1760,25 @@ function createDeckSurface(levelIndex, zCenter) {
 
   for (const side of [-1, 1]) {
     const curb = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN, 0.45, 0.32),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.5, 0.36),
       curbMat
     );
-    curb.position.set(0, ly + 0.15, side * (width / 2));
+    curb.position.set(0, ly + 0.18, side * (width / 2));
     curb.castShadow = true;
     curb.receiveShadow = true;
     g.add(curb);
 
     // Outer vertical fascia on elevated decks
     if (levelIndex > 0) {
-      const edgeFascia = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, 0.7, 0.14),
+      // Continuous solid side wall — closes gaps that read as "glass decks"
+      const sideWall = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 1.45, 0.3),
         curbMat
       );
-      edgeFascia.position.set(0, ly - 0.35, side * (width / 2 + 0.28));
-      edgeFascia.castShadow = true;
-      g.add(edgeFascia);
+      sideWall.position.set(0, ly - 0.42, side * (width / 2 + 0.22));
+      sideWall.castShadow = true;
+      sideWall.receiveShadow = true;
+      g.add(sideWall);
 
       for (let p = 0; p < 3; p++) {
         const pillar = new THREE.Mesh(
@@ -1809,44 +1810,48 @@ function createDeckSurface(levelIndex, zCenter) {
     walkMat.polygonOffsetUnits = -1;
     // Do NOT put walk/curb mats in cutawayMats — they must stay opaque
     const potMat = pbrFrom(maps.concreteWall, 1, 1, {
-      color: 0xa89888,
-      roughness: 0.85,
-      metalness: 0.08,
-      envMapIntensity: 0.3,
+      color: 0xc8c0b4,
+      roughness: 0.88,
+      metalness: 0.05,
+      envMapIntensity: 0.22,
     });
-    const walkH = 0.22;
-    const walkTop = ly + 0.12;
+    const walkH = 0.26;
+    const walkTop = ly + 0.14;
+    const walkZ = 6.55; // clear of road curb (|z|=5) and ground fill
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.7),
+        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.55),
         walkMat
       );
-      // Keep clear of road curb at |z|=width/2 (5.0) and ground plaza
-      walk.position.set(0, walkTop - walkH / 2, side * 6.35);
+      walk.position.set(0, walkTop - walkH / 2, side * walkZ);
       walk.receiveShadow = true;
       walk.castShadow = true;
       g.add(walk);
 
       // Curb lip between road shoulder and sidewalk (distinct height)
+      const lipMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.3, {
+        color: 0xb8b4ac,
+        roughness: 0.92,
+        metalness: 0.04,
+      });
+      lipMat.polygonOffset = true;
+      lipMat.polygonOffsetFactor = -2;
+      lipMat.polygonOffsetUnits = -2;
       const lip = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, 0.14, 0.22),
-        pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.3, {
-          color: 0xb8b4ac,
-          roughness: 0.9,
-          metalness: 0.05,
-        })
+        new THREE.BoxGeometry(SEGMENT_LEN, 0.16, 0.2),
+        lipMat
       );
-      lip.position.set(0, ly + 0.07, side * 5.35);
+      lip.position.set(0, ly + 0.08, side * 5.4);
       lip.receiveShadow = true;
       g.add(lip);
 
-      // Planters sit ON the sidewalk top (not floating)
+      // Planters sit flush on sidewalk (light concrete, not dark floating cubes)
       for (let i = 0; i < 3; i++) {
-        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.5, 0.55), potMat);
+        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.38, 0.48), potMat);
         pot.position.set(
           -SEGMENT_LEN / 2 + 5 + i * 8,
-          walkTop + 0.25,
-          side * 6.35
+          walkTop + 0.19,
+          side * walkZ
         );
         pot.castShadow = true;
         pot.receiveShadow = true;
@@ -1864,12 +1869,12 @@ function createDeckSurface(levelIndex, zCenter) {
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
   // Wide terrain under/beside the corridor so chase-cam never sees empty void
-  // Ground well below sidewalk (walk top ≈ 0.12) — no coplanar flicker
+  // Ground well below sidewalk (walk top ≈ 0.14) — no coplanar flicker
   const strips = [
-    { src: maps.gravel, z: -30, depth: 28, color: 0x8a8678, y: -0.12 },
-    { src: maps.dirt, z: 28, depth: 28, color: 0x7a6a55, y: -0.12 },
-    { src: maps.gravel, z: -14, depth: 10, color: 0x8c887c, y: -0.1 },
-    { src: maps.gravel, z: 14, depth: 10, color: 0x8c887c, y: -0.1 },
+    { src: maps.gravel, z: -32, depth: 26, color: 0x8a8678, y: -0.22 },
+    { src: maps.dirt, z: 30, depth: 26, color: 0x7a6a55, y: -0.22 },
+    { src: maps.gravel, z: -16, depth: 8, color: 0x8c887c, y: -0.2 },
+    { src: maps.gravel, z: 16, depth: 8, color: 0x8c887c, y: -0.2 },
   ];
   for (const s of strips) {
     const mat = pbrFrom(s.src, SEGMENT_LEN / 5, s.depth / 4, {
@@ -1879,15 +1884,18 @@ function createGroundStrip(zCenter) {
       envMapIntensity: 0.15,
       normalScale: new THREE.Vector2(1.4, 1.4),
     });
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = 1;
+    mat.polygonOffsetUnits = 1;
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.14, s.depth),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.16, s.depth),
       mat
     );
     mesh.position.set(0, s.y, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
   }
-  // Plaza farther from sidewalk (z≈−6.35) to avoid edge z-fight
+  // Plaza far from sidewalk (walk at |z|≈6.55) to avoid edge z-fight
   const plazaMat = pbrFrom(maps.cobble, 4, 4, {
     color: 0xb0aaa0,
     roughness: 0.9,
@@ -1895,8 +1903,8 @@ function createGroundStrip(zCenter) {
     envMapIntensity: 0.2,
     normalScale: new THREE.Vector2(1.2, 1.2),
   });
-  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 8), plazaMat);
-  plaza.position.set(-SEGMENT_LEN / 4, -0.08, -18);
+  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 6), plazaMat);
+  plaza.position.set(-SEGMENT_LEN / 4, -0.18, -20);
   plaza.receiveShadow = true;
   g.add(plaza);
 
@@ -2777,14 +2785,27 @@ function anyThrustVisible() {
 function updateDeckCutaway() {
   for (const seg of segments) {
     const mats = seg.userData.cutawayMats;
-    if (!mats) continue;
-    for (const m of mats) {
-      // Never leave glass leftover from a prior fade
-      if (m.userData?.forceGlass) continue;
-      m.transparent = false;
-      m.opacity = 1;
-      m.depthWrite = true;
+    if (mats) {
+      for (const m of mats) {
+        if (m.userData?.forceGlass) continue;
+        m.transparent = false;
+        m.opacity = 1;
+        m.depthWrite = true;
+        if ("transmission" in m) m.transmission = 0;
+      }
     }
+    // Belt-and-suspenders: every deck mesh stays solid (skip marked glass)
+    seg.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const list = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of list) {
+        if (!m || m.userData?.forceGlass) continue;
+        m.transparent = false;
+        m.opacity = 1;
+        m.depthWrite = true;
+        if ("transmission" in m) m.transmission = 0;
+      }
+    });
   }
 }
 
