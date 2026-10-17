@@ -311,44 +311,43 @@ def add_lights(led_w, led_r):
 
 
 def add_wheel(name, x, y, tire_mat, spoke_mat, disc_mat):
-    """Wheel hub at (x,y,z=0.32). Axle along Y."""
+    """Wheel hub at (x,y,z=0.32). Axle along Y (Blender) → Z in glTF."""
     hub = bpy.data.objects.new(name, None)
     bpy.context.collection.objects.link(hub)
     hub.empty_display_type = "SPHERE"
     hub.empty_display_size = 0.05
     hub.location = (x, y, 0.32)
 
-    def adopt(obj, local=(0.0, 0.0, 0.0)):
-        obj.parent = hub
-        obj.location = local
+    def make_axle_cylinder(radius, depth, verts=24):
+        # Bake rotation into mesh so export can't flatten tires into pancakes
+        bpy.ops.mesh.primitive_cylinder_add(
+            radius=radius,
+            depth=depth,
+            location=(x, y, 0.32),
+            rotation=(math.pi / 2, 0, 0),
+            vertices=verts,
+        )
+        ob = bpy.context.active_object
+        apply_object(ob)
+        ob.parent = hub
+        ob.location = (0.0, 0.0, 0.0)
+        ob.rotation_euler = (0.0, 0.0, 0.0)
+        return ob
 
-    # Tire: cylinder along Y (axle)
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=0.32, depth=0.22, location=(x, y, 0.32), rotation=(math.pi / 2, 0, 0), vertices=24
-    )
-    tire = bpy.context.active_object
+    tire = make_axle_cylinder(0.32, 0.22, 24)
     tire.name = name + "_Tire"
     tire.data.materials.append(tire_mat)
     shade_smooth(tire)
-    adopt(tire)
 
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=0.23, depth=0.12, location=(x, y, 0.32), rotation=(math.pi / 2, 0, 0), vertices=20
-    )
-    side = bpy.context.active_object
+    side = make_axle_cylinder(0.23, 0.12, 20)
     side.name = name + "_Sidewall"
     side.data.materials.append(tire_mat)
     shade_smooth(side)
-    adopt(side)
 
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=0.20, depth=0.04, location=(x, y, 0.32), rotation=(math.pi / 2, 0, 0), vertices=20
-    )
-    disc = bpy.context.active_object
+    disc = make_axle_cylinder(0.20, 0.04, 20)
     disc.name = name + "_Disc"
     disc.data.materials.append(disc_mat)
     shade_flat(disc)
-    adopt(disc)
 
     for i in range(6):
         ang = i * math.pi / 3
@@ -357,22 +356,18 @@ def add_wheel(name, x, y, tire_mat, spoke_mat, disc_mat):
         sp.name = name + f"_Spoke{i}"
         sp.scale = (0.03, 0.045, 0.14)
         apply_object(sp)
-        # Rotate about axle (Y)
         sp.rotation_euler = (0, ang, 0)
         apply_object(sp)
         sp.data.materials.append(spoke_mat)
         shade_flat(sp)
-        adopt(sp, (math.sin(ang) * 0.01, 0.0, math.cos(ang) * 0.01))
-        sp.rotation_euler = (0, ang, 0)
+        sp.parent = hub
+        sp.location = (math.sin(ang) * 0.01, 0.0, math.cos(ang) * 0.01)
+        sp.rotation_euler = (0.0, 0.0, 0.0)
 
-    bpy.ops.mesh.primitive_cylinder_add(
-        radius=0.05, depth=0.055, location=(x, y, 0.32), rotation=(math.pi / 2, 0, 0)
-    )
-    cap = bpy.context.active_object
+    cap = make_axle_cylinder(0.05, 0.055, 16)
     cap.name = name + "_Cap"
     cap.data.materials.append(spoke_mat)
     shade_flat(cap)
-    adopt(cap)
     return hub
 
 

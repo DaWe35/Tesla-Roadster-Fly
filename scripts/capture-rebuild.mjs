@@ -1,5 +1,6 @@
 /**
- * Capture gameplay + thrusting close-ups for the Roadster rebuild pass.
+ * Capture gameplay + car close-ups for the Roadster rebuild pass.
+ * Close-ups are geometry-first (no thrust fog); thrust shown on chase / rear.
  */
 import puppeteer from "puppeteer";
 import http from "http";
@@ -26,8 +27,7 @@ const MIME = {
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url || "/").split("?")[0]);
   if (u === "/") u = "/index.html";
-  const file = path.join(root, u);
-  fs.readFile(file, (err, data) => {
+  fs.readFile(path.join(root, u), (err, data) => {
     if (err) {
       res.writeHead(404);
       res.end("no");
@@ -49,9 +49,11 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 await page.setViewport({ width: 1280, height: 720 });
 page.on("pageerror", (e) => console.error("PAGEERROR", e.message));
-await page.goto(`http://127.0.0.1:8105/?v=${Date.now()}`, { waitUntil: "domcontentloaded" });
-await page.waitForFunction(() => window.__ROADSTER__?.simulate, { timeout: 45000 });
-await new Promise((r) => setTimeout(r, 1000));
+await page.goto(`http://127.0.0.1:8105/?quality=high&v=${Date.now()}`, {
+  waitUntil: "domcontentloaded",
+});
+await page.waitForFunction(() => window.__ROADSTER__?.simulate, { timeout: 60000 });
+await new Promise((r) => setTimeout(r, 1500));
 
 async function shot(name) {
   const p = path.join(outDir, `${name}.png`);
@@ -61,46 +63,40 @@ async function shot(name) {
 
 const dbg = await page.evaluate(() => {
   window.__ROADSTER__.startGame();
-  window.__ROADSTER__.simulate(0.3);
+  window.__ROADSTER__.simulate(0.25);
   return window.__ROADSTER__.debug();
 });
-console.log("debug", JSON.stringify(dbg, null, 2));
+console.log("debug", JSON.stringify(dbg));
 
-// Upright chase
+// Upright chase (gameplay cam)
 await page.evaluate(() => {
   window.__ROADSTER__.unlockCamera();
   window.__ROADSTER__.startGame();
-  window.__ROADSTER__.simulate(1.2);
+  window.__ROADSTER__.simulate(1.3);
 });
 await shot("rebuild_upright");
 
-// Inverted chase
+// Inverted chase with sustain thrust
 await page.evaluate(() => {
   window.__ROADSTER__.startGame();
-  window.__ROADSTER__.simulate(0.5);
+  window.__ROADSTER__.simulate(0.45);
   window.__ROADSTER__.pressFlip();
-  for (let i = 0; i < 28; i++) window.__ROADSTER__.simulate(1 / 60);
-  window.__ROADSTER__.simulate(0.5);
+  for (let i = 0; i < 30; i++) window.__ROADSTER__.simulate(1 / 60);
+  window.__ROADSTER__.simulate(0.55);
 });
 await shot("rebuild_inverted");
 
-async function closeUp(name, ox, oy, oz, lx, ly, lz) {
+// Geometry close-ups — NO hop/thrust so the shell is readable
+async function orbit(name, ox, oy, oz, lx, ly, lz) {
   await page.evaluate(
     (a, b, c, d, e, f) => {
       const R = window.__ROADSTER__;
       R.unlockCamera();
       R.startGame();
-      R.simulate(0.35);
-      // Hop to fire thrusters, then hold camera
-      R.pressUp();
-      for (let i = 0; i < 6; i++) R.simulate(1 / 60);
+      R.simulate(0.5);
       const st = R.getState();
-      const x = st.x;
-      const y = st.y;
-      R.setCameraLook(x + a, y + b, c, x + d, y + e, f);
-      // Keep simulating with locked cam so thrusters update
-      R.pressUp();
-      for (let i = 0; i < 14; i++) R.simulate(1 / 60);
+      R.setCameraLook(st.x + a, st.y + b, c, st.x + d, st.y + e, f);
+      R.simulate(0.05); // one locked frame
     },
     ox,
     oy,
@@ -112,18 +108,30 @@ async function closeUp(name, ox, oy, oz, lx, ly, lz) {
   await shot(name);
 }
 
-await closeUp("rebuild_car_front_3q", 3.8, 1.15, -2.6, 0.3, 0.4, 0);
-await closeUp("rebuild_car_side", 0.4, 0.95, -4.4, 0.1, 0.35, 0);
-await closeUp("rebuild_car_rear_thrust", -4.0, 1.25, -1.6, -0.3, 0.35, 0);
+await orbit("rebuild_car_front_3q", 3.5, 1.05, -2.4, 0.2, 0.4, 0);
+await orbit("rebuild_car_side", 0.2, 0.85, -4.2, 0.0, 0.35, 0);
+await orbit("rebuild_car_rear", -3.8, 1.1, -1.5, -0.2, 0.35, 0);
 
-// Chase while thrusting
+// Rear thrusting — short hop, camera behind, few frames so shafts read without white-out
 await page.evaluate(() => {
   const R = window.__ROADSTER__;
   R.unlockCamera();
   R.startGame();
-  R.simulate(0.6);
+  R.simulate(0.4);
+  const st0 = R.getState();
+  R.setCameraLook(st0.x - 3.6, st0.y + 1.2, -1.4, st0.x - 0.2, st0.y + 0.35, 0);
   R.pressUp();
-  for (let i = 0; i < 14; i++) R.simulate(1 / 60);
+  for (let i = 0; i < 8; i++) R.simulate(1 / 60);
+});
+await shot("rebuild_car_rear_thrust");
+
+await page.evaluate(() => {
+  const R = window.__ROADSTER__;
+  R.unlockCamera();
+  R.startGame();
+  R.simulate(0.7);
+  R.pressUp();
+  for (let i = 0; i < 10; i++) R.simulate(1 / 60);
 });
 await shot("rebuild_thrust_chase");
 
