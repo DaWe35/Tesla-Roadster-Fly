@@ -1,8 +1,8 @@
 # Roadster Rise / Roadster Emelkedés
 
-A bright 3D browser runner starring the **2026 Tesla Roadster**. No left/right lanes — change **stacked levels**, and **flip onto glowing light beams** to cross the gaps between segments.
+A bright 3D browser runner starring the **2026 Tesla Roadster**. No left/right lanes — hop **stacked levels**, and **flip** to drive upside down on the underside of the road above.
 
-Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sávváltás — **szintek között** lépsz, és **fényhídon** (fejjel lefelé) kelhetsz át a szakadékokon.
+Színes 3D böngészős futójáték a **2026-os Tesla Roadsterrel**. Nincs sávváltás — **szintek között** lépsz, és **fejjel lefelé** a felső út alján hajthatsz.
 
 ---
 
@@ -24,11 +24,13 @@ Open `http://localhost:8080` → **START RUN**.
 |--------|--------|
 | `↑` / `Space` / `W` / swipe up | Move one level up |
 | `↓` / `S` / swipe down | Move one level down |
-| `Shift` / **FLIP** | Flip to the ceiling (beams light up) or back to the floor |
+| `Shift` / **Flip** | Flip to the ceiling or back to the floor |
 
-**Gaps** separate the path on every level. Crossing a gap upright = crash. While **inverted**, a glowing **light-beam bridge** spans each gap — ride it across, then flip upright again.
+**Gaps** open on some roads, but never on all three levels at once — there is always a passable route. Cross a gap by **flipping** onto the underside of the road above, or **hop** to a level that still has pavement.
 
-**Score** = survival time (`localStorage` best). Obstacles sit on floors and ceilings. Speed ramps gently so a new player can often last **30+ seconds**.
+Cold-gas thrusters flare on hops and flips, and glow while you hang inverted (visual only).
+
+**Score** = survival time (`localStorage` best).
 
 ### Tech
 
@@ -53,6 +55,6 @@ python3 -m http.server 8080
 |-----------|--------|
 | `↑` / `Space` / swipe fel | Egy szinttel feljebb |
 | `↓` / `S` / swipe le | Egy szinttel lejjebb |
-| `Shift` / FLIP | Plafonra fordulás — megjelennek a fényhidak a szakadékokon |
+| `Shift` / **Flip** | Plafonra fordulás vagy vissza a padlóra |
 
-A szakadékot **csak fejjel lefelé, fényhídon** lehet átkelni.
+A szakadékok **soha nem nyílnak meg mindhárom szinten egyszerre**. Átkelés: **Flip** a felső út aljára, vagy szintváltás.

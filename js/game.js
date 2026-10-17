@@ -385,13 +385,59 @@ function createRoadster() {
     wheels.push({ hub, spinner, baseY: y });
   }
 
-  // Jet particles
-  const jetCount = 100;
+  // Cold-gas thruster plumes (body-local −Y = belly → floor upright / ceiling inverted)
+  const plumes = [];
+  const plumeMat = new THREE.MeshBasicMaterial({
+    color: 0xa5f3fc,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  for (let i = 0; i < 4; i++) {
+    const plume = new THREE.Mesh(
+      new THREE.ConeGeometry(0.12, 0.85, 8, 1, true),
+      plumeMat.clone()
+    );
+    plume.rotation.x = Math.PI; // tip points local −Y (belly)
+    const sz = i < 2 ? -0.28 : 0.28;
+    const sx = i % 2 === 0 ? -2.55 : -2.35;
+    plume.position.set(sx, 0.05, sz);
+    plume.visible = false;
+    body.add(plume);
+    plumes.push(plume);
+  }
+
+  // Soft glow discs at nozzle mouths
+  const glowDiscs = [];
+  for (let i = 0; i < 4; i++) {
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.16, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0xe0f7ff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      })
+    );
+    disc.rotation.x = Math.PI / 2;
+    const sz = i < 2 ? -0.28 : 0.28;
+    disc.position.set(-2.7, 0.12, sz);
+    disc.visible = false;
+    body.add(disc);
+    glowDiscs.push(disc);
+  }
+
+  // Jet particles (low count for mobile)
+  const jetCount = 48;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
+  const jetVel = new Float32Array(jetCount * 3);
   const jetLife = new Float32Array(jetCount);
   for (let i = 0; i < jetCount; i++) {
-    jetPos[i * 3 + 1] = -20;
+    jetPos[i * 3 + 1] = -40;
     jetLife[i] = 0;
   }
   jetGeo.setAttribute("position", new THREE.BufferAttribute(jetPos, 3));
@@ -399,17 +445,30 @@ function createRoadster() {
     jetGeo,
     new THREE.PointsMaterial({
       color: 0xb8f4ff,
-      size: 0.22,
+      size: 0.2,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.85,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     })
   );
   jets.frustumCulled = false;
-  root.add(jets);
+  root.add(jets); // world-space particles
 
-  root.userData = { body, wheels, nozzles, jetLights, jets, jetPos, jetLife, jetCount };
+  root.userData = {
+    body,
+    wheels,
+    nozzles,
+    jetLights,
+    plumes,
+    glowDiscs,
+    jets,
+    jetPos,
+    jetVel,
+    jetLife,
+    jetCount,
+    thrustLevel: 0,
+  };
   return root;
 }
 
@@ -433,14 +492,14 @@ const BUILDING_PALETTE = [
 
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.75,
-      metalness: 0.15,
-    })
-  );
+  const cutawayMats = [];
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.75,
+    metalness: 0.15,
+  });
+  cutawayMats.push(bodyMat);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
   mesh.position.y = h / 2;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -453,6 +512,7 @@ function makeBuilding(w, h, d, color) {
     emissiveIntensity: 0.35,
     roughness: 0.4,
   });
+  cutawayMats.push(winMat);
   const rows = Math.max(2, Math.floor(h / 1.4));
   const cols = Math.max(2, Math.floor(w / 1.1));
   for (let r = 0; r < rows; r++) {
@@ -473,13 +533,19 @@ function makeBuilding(w, h, d, color) {
 
   // Roof accent
   if (h > 6) {
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.5 });
+    cutawayMats.push(roofMat);
     const roof = new THREE.Mesh(
       new THREE.BoxGeometry(w * 0.5, 0.4, d * 0.5),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.5 })
+      roofMat
     );
     roof.position.y = h + 0.2;
     g.add(roof);
   }
+  g.userData.isCityBuilding = true;
+  g.userData.cutawayMats = cutawayMats;
+  g.userData.buildingH = h;
+  g.userData.buildingD = d;
   return g;
 }
 
@@ -914,11 +980,15 @@ function createDeckSurface(levelIndex, zCenter) {
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
+  // Camera chases from negative Z. Keep that side well clear of the
+  // corridor between camera (~-12..-17) and the track (z=0).
+  const CAM_SIDE_CLEAR = 22; // |z| floor on camera side
+  const FAR_SIDE_MIN = 9;
   for (const side of [-1, 1]) {
     let x = -SEGMENT_LEN / 2 + 2;
     while (x < SEGMENT_LEN / 2 - 2) {
       const w = 2.5 + Math.random() * 3.5;
-      const d = 2.5 + Math.random() * 4;
+      const d = 2.5 + Math.random() * 3.5;
       const h = 4 + Math.random() * 14;
       const b = makeBuilding(
         w,
@@ -926,26 +996,33 @@ function createCityBlock(zCenter) {
         d,
         BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
       );
-      b.position.set(x, 0, side * (8 + d / 2 + Math.random() * 4));
+      const base = side < 0 ? CAM_SIDE_CLEAR : FAR_SIDE_MIN;
+      const jitter = side < 0 ? Math.random() * 6 : Math.random() * 4;
+      b.position.set(x, 0, side * (base + d / 2 + jitter));
       b.rotation.y = side > 0 ? 0 : Math.PI;
+      b.userData.cameraSide = side < 0;
       g.add(b);
       x += w + 1.2 + Math.random() * 2;
     }
   }
-  // Distant backdrop towers
+  // Distant backdrop towers — camera side stays behind the chase cam
   for (let i = 0; i < 4; i++) {
     const h = 12 + Math.random() * 22;
+    const d = 3 + Math.random() * 4;
     const b = makeBuilding(
       3 + Math.random() * 4,
       h,
-      3 + Math.random() * 4,
+      d,
       BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
     );
+    const camSide = Math.random() > 0.45;
+    const dist = camSide ? 28 + Math.random() * 12 : 20 + Math.random() * 12;
     b.position.set(
       -SEGMENT_LEN / 2 + 4 + i * 7,
       0,
-      (Math.random() > 0.5 ? 1 : -1) * (18 + Math.random() * 10)
+      (camSide ? -1 : 1) * dist
     );
+    b.userData.cameraSide = camSide;
     g.add(b);
   }
   g.position.x = zCenter;
@@ -989,10 +1066,9 @@ let cities = [];
 let obstacles = [];
 let trains = [];
 let pickups = [];
-let beams = [];
 let nextSegmentX = 0;
 let rngSeed = 1;
-const GAP_EVERY = 3; // after start, every Nth segment is a gap on all levels
+const GAP_PERIOD = 3; // stagger: at most one level gaps per column
 
 function rand() {
   rngSeed = (rngSeed * 16807) % 2147483647;
@@ -1004,140 +1080,50 @@ function easeOutCubic(t) {
 }
 
 function hasDeckAt(level, x) {
-  let sawGap = false;
   let sawAny = false;
   for (const s of segments) {
     if (s.userData.levelIndex !== level) continue;
     if (Math.abs(s.position.x - x) > SEGMENT_LEN / 2 + 0.85) continue;
     sawAny = true;
-    // Prefer solid if both gap marker and deck overlap at a seam
     if (!s.userData.hasGap) return true;
-    sawGap = true;
   }
-  // No segment underfoot (spawn lag / seam) — treat as solid so we don't false-kill
   if (!sawAny) return true;
-  return false; // only gap markers underfoot
-}
-
-function onBeamAt(level, x) {
-  for (const b of beams) {
-    if (b.userData.level !== level) continue;
-    if (x >= b.userData.x0 - 1.0 && x <= b.userData.x1 + 1.0) return true;
-  }
   return false;
 }
 
-/** Solid deck, or inverted on a light-beam across a gap. */
+/** Ceiling for level L = underside of deck L+1 (or roof canopy on L=2). */
+function hasCeilingAt(level, x) {
+  if (level < LEVELS.length - 1) return hasDeckAt(level + 1, x);
+  return hasDeckAt(level, x);
+}
+
+/** Floor when upright; ceiling underside when inverted. */
 function hasSupport(level, x) {
-  if (hasDeckAt(level, x)) return true;
-  if (state.inverted && onBeamAt(level, x)) return true;
-  return false;
+  if (state.inverted) return hasCeilingAt(level, x);
+  return hasDeckAt(level, x);
 }
 
-function makeLightBeam(level, x0, x1) {
-  const g = new THREE.Group();
-  const len = Math.max(1, x1 - x0);
-  const mid = (x0 + x1) / 2;
-  const y = ceilingY(level) - 0.08;
-  g.position.set(mid, 0, 0);
-
-  const glowMat = new THREE.MeshStandardMaterial({
-    color: 0x67e8f9,
-    emissive: 0x22d3ee,
-    emissiveIntensity: 0.05,
-    transparent: true,
-    opacity: 0.12,
-    depthWrite: false,
-  });
-  const coreMat = new THREE.MeshStandardMaterial({
-    color: 0xecfeff,
-    emissive: 0xa5f3fc,
-    emissiveIntensity: 0.08,
-    transparent: true,
-    opacity: 0.18,
-    depthWrite: false,
-  });
-
-  const beam = new THREE.Mesh(new THREE.BoxGeometry(len, 0.12, 2.0), glowMat);
-  beam.position.set(0, y, 0);
-  g.add(beam);
-
-  const core = new THREE.Mesh(new THREE.BoxGeometry(len, 0.28, 0.55), coreMat);
-  core.position.set(0, y, 0);
-  g.add(core);
-
-  // Soft upright pillars at ends (always faintly visible as gap markers)
-  for (const side of [-1, 1]) {
-    const post = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.18, ceilingY(level) - floorY(level), 8),
-      new THREE.MeshStandardMaterial({
-        color: 0x155e75,
-        emissive: 0x0891b2,
-        emissiveIntensity: 0.2,
-        transparent: true,
-        opacity: 0.55,
-      })
-    );
-    post.position.set(side * (len / 2), (ceilingY(level) + floorY(level)) / 2, 0);
-    g.add(post);
-  }
-
-  g.userData = {
-    type: "beam",
-    level,
-    x0,
-    x1,
-    glowMat,
-    coreMat,
-    active: false,
-  };
-  return g;
-}
-
-function updateBeams() {
-  for (const b of beams) {
-    const on = state.inverted && !state.dead;
-    b.userData.active = on;
-    const gm = b.userData.glowMat;
-    const cm = b.userData.coreMat;
-    if (!gm || !cm) continue;
-    if (on) {
-      gm.opacity = 0.72;
-      gm.emissiveIntensity = 1.35;
-      cm.opacity = 0.95;
-      cm.emissiveIntensity = 1.8;
-    } else {
-      // Ghost hint so players learn gaps need Shift
-      gm.opacity = 0.1;
-      gm.emissiveIntensity = 0.08;
-      cm.opacity = 0.14;
-      cm.emissiveIntensity = 0.12;
-    }
-  }
-}
-
+/**
+ * Staggered gaps: never all three levels open at once.
+ * Pattern (idx+li)%3===0 opens exactly one level per column after the safe start.
+ */
 function spawnSegment(xCenter, safe = false) {
   const idx = Math.round(xCenter / SEGMENT_LEN);
-  // Shared gaps on every level so hopping alone cannot skip the beam puzzle
-  const isGap = !safe && idx >= 3 && idx % GAP_EVERY === 0;
+  let anySolid = false;
 
   for (let li = 0; li < LEVELS.length; li++) {
+    const isGap = !safe && idx >= 3 && (idx + li) % GAP_PERIOD === 0;
     if (isGap) {
       const marker = new THREE.Group();
       marker.position.set(xCenter, 0, 0);
       marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
       worldRoot.add(marker);
       segments.push(marker);
-
-      const x0 = xCenter - SEGMENT_LEN / 2;
-      const x1 = xCenter + SEGMENT_LEN / 2;
-      const beam = makeLightBeam(li, x0, x1);
-      worldRoot.add(beam);
-      beams.push(beam);
     } else {
       const deck = createDeckSurface(li, xCenter);
       worldRoot.add(deck);
       segments.push(deck);
+      anySolid = true;
     }
   }
 
@@ -1145,8 +1131,7 @@ function spawnSegment(xCenter, safe = false) {
   worldRoot.add(city);
   cities.push(city);
 
-  // Hazards only on solid segments
-  if (!safe && !isGap) placeHazards(xCenter);
+  if (!safe && anySolid) placeHazards(xCenter);
   nextSegmentX = Math.max(nextSegmentX, xCenter + SEGMENT_LEN);
 }
 
@@ -1188,20 +1173,17 @@ function resetWorld() {
   for (const o of obstacles) worldRoot.remove(o);
   for (const t of trains) worldRoot.remove(t);
   for (const p of pickups) worldRoot.remove(p);
-  for (const b of beams) worldRoot.remove(b);
   segments = [];
   cities = [];
   obstacles = [];
   trains = [];
   pickups = [];
-  beams = [];
   nextSegmentX = 0;
   rngSeed = (Date.now() % 100000) + 1;
 
   for (let i = -SEGMENTS_BEHIND; i < SEGMENTS_AHEAD; i++) {
     spawnSegment(i * SEGMENT_LEN, i < 3);
   }
-  updateBeams();
 }
 
 function pruneWorld(playerX) {
@@ -1209,11 +1191,7 @@ function pruneWorld(playerX) {
   const filterKeep = (arr) => {
     const keep = [];
     for (const obj of arr) {
-      const ox =
-        obj.userData?.x1 !== undefined
-          ? (obj.userData.x0 + obj.userData.x1) / 2
-          : obj.position.x;
-      if (ox < minX - SEGMENT_LEN) worldRoot.remove(obj);
+      if (obj.position.x < minX - SEGMENT_LEN) worldRoot.remove(obj);
       else keep.push(obj);
     }
     return keep;
@@ -1223,7 +1201,6 @@ function pruneWorld(playerX) {
   obstacles = filterKeep(obstacles);
   trains = filterKeep(trains);
   pickups = filterKeep(pickups);
-  beams = filterKeep(beams);
 
   while (nextSegmentX < playerX + SEGMENT_LEN * SEGMENTS_AHEAD) {
     spawnSegment(nextSegmentX);
@@ -1234,11 +1211,12 @@ function beginHop(dir) {
   if (state.hopping || state.flipping || !state.running) return false;
   const target = state.level + dir;
   if (target < 0 || target >= LEVELS.length) return false;
-  // Check footing under the car now (not ahead — that blocks hops before gaps)
   const x = roadster.position.x;
-  const canLand =
-    hasDeckAt(target, x) || (state.inverted && onBeamAt(target, x));
-  if (!canLand) return false;
+  if (state.inverted) {
+    if (!hasCeilingAt(target, x)) return false;
+  } else if (!hasDeckAt(target, x)) {
+    return false;
+  }
   state.hopping = true;
   state.hopT = 0;
   state.hopFromLevel = state.level;
@@ -1246,19 +1224,24 @@ function beginHop(dir) {
   state.hopFromY = state.y;
   state.hopToY = surfaceY(target, state.inverted);
   state.level = target;
+  burstThrusters(1);
   return true;
 }
 
 function beginFlip() {
   if (state.hopping || state.flipping || !state.running) return false;
+  const nextInv = !state.inverted;
+  // Must have ceiling to flip to, or floor to flip back onto
+  if (nextInv && !hasCeilingAt(state.level, roadster.position.x)) return false;
+  if (!nextInv && !hasDeckAt(state.level, roadster.position.x)) return false;
   state.flipping = true;
   state.flipT = 0;
   state.flipFromY = state.y;
   state.flipFromRoll = state.roll;
-  state.inverted = !state.inverted;
+  state.inverted = nextInv;
   state.flipToY = surfaceY(state.level, state.inverted);
   state.flipToRoll = state.inverted ? Math.PI : 0;
-  updateBeams(); // light beams appear the moment you commit to ceiling
+  burstThrusters(1);
   return true;
 }
 
@@ -1268,7 +1251,6 @@ function updatePlayer(dt) {
   state.speed = Math.min(state.maxSpeed, state.baseSpeed + state.time * 0.15);
   roadster.position.x += state.speed * dt;
 
-  // Inputs (edge-triggered)
   if (input.up) beginHop(1);
   if (input.down) beginHop(-1);
   if (input.flip) beginFlip();
@@ -1276,7 +1258,6 @@ function updatePlayer(dt) {
   input.down = false;
   input.flip = false;
 
-  // Near-instant level change (no jump arc)
   if (state.hopping) {
     state.hopT += dt / HOP_DURATION;
     const t = Math.min(1, state.hopT);
@@ -1287,7 +1268,11 @@ function updatePlayer(dt) {
       state.y = state.hopToY;
       state.suspension = state.inverted ? 0.08 : -0.08;
       if (!hasSupport(state.level, roadster.position.x)) {
-        die("Fell through a gap — flip onto a light beam!");
+        die(
+          state.inverted
+            ? "No ceiling above — hop to another level!"
+            : "Fell through a gap — flip or hop!"
+        );
         return;
       }
     }
@@ -1304,10 +1289,12 @@ function updatePlayer(dt) {
       state.y = state.flipToY;
       state.roll = state.flipToRoll;
       state.suspension = state.inverted ? 0.08 : -0.08;
-      updateBeams();
-      // Flipping upright mid-gap = crash
       if (!hasSupport(state.level, roadster.position.x)) {
-        die("Dropped off the beam — stay inverted to cross!");
+        die(
+          state.inverted
+            ? "Nothing to stick to — hop to solid road!"
+            : "Fell through a gap — flip to the ceiling!"
+        );
         return;
       }
     }
@@ -1317,29 +1304,28 @@ function updatePlayer(dt) {
     if (!hasSupport(state.level, roadster.position.x)) {
       die(
         state.inverted
-          ? "Missed the light beam!"
-          : "Fell through a gap — press Shift to ride the beam!"
+          ? "Ceiling ended — hop or flip to the floor!"
+          : "Fell through a gap — press Flip or hop levels!"
       );
       return;
     }
   }
-
-  updateBeams();
 
   state.suspension = THREE.MathUtils.lerp(state.suspension, 0, 1 - Math.pow(0.01, dt));
   roadster.position.z = 0;
   ud.body.rotation.x = state.roll;
   ud.body.position.y = state.suspension;
 
-  // Spin only around the axle (spinner local X). Hubs are parented to body,
-  // so ceiling flip (body.rotation.x) carries wheels correctly.
-  state.wheelSpin += (state.speed / 0.36) * dt; // radius ~0.36
+  state.wheelSpin += (state.speed / 0.36) * dt;
   for (const w of ud.wheels) {
     w.spinner.rotation.x = -state.wheelSpin;
     w.hub.position.y = w.baseY + state.suspension * 0.35;
   }
 
+  updateThrusters(dt);
   updateDeckCutaway();
+  updateBuildingCutaway();
+  updatePlayHint(dt);
 
   if (state.invuln > 0) state.invuln -= dt;
   else checkCollisions();
@@ -1348,11 +1334,6 @@ function updatePlayer(dt) {
 function checkCollisions() {
   const px = roadster.position.x;
   const half = 1.35;
-
-  // Light-beam corridors are clear — hazards live on solid decks only
-  const ridingBeam =
-    state.inverted && onBeamAt(state.level, px) && !hasDeckAt(state.level, px);
-  if (ridingBeam) return;
 
   for (const o of obstacles) {
     const level = o.userData.level;
@@ -1377,7 +1358,7 @@ function checkCollisions() {
     const len = t.userData.length || 8;
     const cx = t.position.x + len / 2 - 2;
     if (Math.abs(px - cx) < len / 2 + 0.6) {
-      die("Hit a train — hop up or flip onto a beam!");
+      die("Hit a train — hop up or flip to the ceiling!");
       return;
     }
   }
@@ -1440,59 +1421,206 @@ function updateTrains(dt) {
   }
 }
 
-/** Fade / hide decks that sit between the side camera and the car. */
+/**
+ * Thrusters: full jets during hop & throughout flip; continuous visual while
+ * inverted (belly jets point toward the ceiling). Visual only — no physics.
+ */
+function burstThrusters(amount = 1) {
+  const ud = roadster.userData;
+  ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
+}
+
+function updateThrusters(dt) {
+  const ud = roadster.userData;
+  // Target intensity: burst actions + sustained inverted hold
+  let target = 0;
+  if (state.hopping) target = 1;
+  else if (state.flipping) target = 1;
+  else if (state.inverted && state.running && !state.dead) target = 0.55;
+  ud.thrustLevel = THREE.MathUtils.lerp(
+    ud.thrustLevel || 0,
+    target,
+    1 - Math.pow(state.hopping || state.flipping ? 0.001 : 0.08, dt)
+  );
+  if (target > (ud.thrustLevel || 0)) ud.thrustLevel = target;
+  const lvl = ud.thrustLevel || 0;
+  const active = lvl > 0.04;
+
+  for (const light of ud.jetLights) {
+    light.intensity = active ? 1.2 + lvl * 2.4 : 0;
+    light.distance = 4 + lvl * 3;
+    light.color.setHex(0x7dd3fc);
+  }
+  ud.plumes.forEach((plume, i) => {
+    plume.visible = active;
+    plume.material.opacity = active ? 0.25 + lvl * 0.55 : 0;
+    plume.scale.setScalar(0.7 + lvl * 0.9 + Math.sin(state.time * 28 + i) * 0.06);
+  });
+  for (const disc of ud.glowDiscs) {
+    disc.visible = active;
+    disc.material.opacity = active ? 0.35 + lvl * 0.5 : 0;
+  }
+
+  // Emit a few particles per frame (world space, belly direction)
+  const { jetPos, jetVel, jetLife, jetCount, jets, body } = ud;
+  body.updateWorldMatrix(true, false);
+  const bellyDir = new THREE.Vector3(0, -1, 0).applyQuaternion(body.getWorldQuaternion(new THREE.Quaternion()));
+  const origin = new THREE.Vector3();
+  if (active) {
+    const spawnN = state.hopping || state.flipping ? 3 : 1;
+    for (let s = 0; s < spawnN; s++) {
+      let slot = -1;
+      for (let i = 0; i < jetCount; i++) {
+        if (jetLife[i] <= 0) {
+          slot = i;
+          break;
+        }
+      }
+      if (slot < 0) slot = (Math.random() * jetCount) | 0;
+      const nz = ud.nozzles[s % ud.nozzles.length];
+      nz.getWorldPosition(origin);
+      jetPos[slot * 3] = origin.x + (Math.random() - 0.5) * 0.15;
+      jetPos[slot * 3 + 1] = origin.y + (Math.random() - 0.5) * 0.1;
+      jetPos[slot * 3 + 2] = origin.z + (Math.random() - 0.5) * 0.15;
+      const speed = 4 + lvl * 8 + Math.random() * 3;
+      jetVel[slot * 3] = bellyDir.x * speed + (Math.random() - 0.5) * 1.2;
+      jetVel[slot * 3 + 1] = bellyDir.y * speed + (Math.random() - 0.5) * 1.2;
+      jetVel[slot * 3 + 2] = bellyDir.z * speed + (Math.random() - 0.5) * 1.2;
+      jetLife[slot] = 0.18 + Math.random() * 0.22;
+    }
+  }
+  for (let i = 0; i < jetCount; i++) {
+    if (jetLife[i] <= 0) {
+      jetPos[i * 3 + 1] = -40;
+      continue;
+    }
+    jetLife[i] -= dt;
+    jetPos[i * 3] += jetVel[i * 3] * dt;
+    jetPos[i * 3 + 1] += jetVel[i * 3 + 1] * dt;
+    jetPos[i * 3 + 2] += jetVel[i * 3 + 2] * dt;
+    jetVel[i * 3] *= 0.96;
+    jetVel[i * 3 + 1] *= 0.96;
+    jetVel[i * 3 + 2] *= 0.96;
+    if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
+  }
+  jets.geometry.attributes.position.needsUpdate = true;
+  jets.material.opacity = active ? 0.55 + lvl * 0.35 : 0;
+}
+
+/** Fade decks between camera and car — critical when inverted under a slab. */
 function updateDeckCutaway() {
   const carX = roadster.position.x;
+  const carY = state.y;
   const carLevel = state.level;
+  const camY = camera.position.y;
   for (const seg of segments) {
     const li = seg.userData.levelIndex;
     if (li === undefined) continue;
     const mats = seg.userData.cutawayMats;
     if (!mats) continue;
+    if (seg.userData.hasGap) continue;
 
-    // Occludes if this deck is between camera (side -Z) and path, or a slab
-    // above/below that would block the view of the car's corridor.
-    // Side camera looks from -Z: fade near-side rail slabs + decks that cover
-    // the view of adjacent levels the player might hop to.
     const dx = Math.abs(seg.position.x - carX);
-    const near = dx < SEGMENT_LEN * 1.2;
+    const near = dx < SEGMENT_LEN * 1.35;
     let opacity = 1;
     if (near) {
-      // Always keep current level readable; slightly fade neighbors' near-side clutter
-      if (li === carLevel) opacity = state.inverted ? 0.55 : 0.85;
-      else if (Math.abs(li - carLevel) === 1) opacity = 0.35;
-      else opacity = 0.15;
-      // Extra cut on the camera-side half of elevated decks (Z < 0)
+      if (li === carLevel) opacity = state.inverted ? 0.45 : 0.88;
+      else if (Math.abs(li - carLevel) === 1) opacity = 0.4;
+      else opacity = 0.18;
+
+      // Deck that the inverted car hangs from (level above) — cut away hard
+      if (state.inverted && li === carLevel + 1) opacity = Math.min(opacity, 0.12);
+      // Top-level canopy when hanging under roof
+      if (state.inverted && carLevel === 2 && li === 2) opacity = Math.min(opacity, 0.14);
+
+      // Any deck whose Y slab sits between camera and car
+      const deckY = floorY(li);
+      const betweenY =
+        (deckY - camY) * (deckY - carY) < 0 ||
+        (Math.min(camY, carY) < deckY && deckY < Math.max(camY, carY));
+      if (betweenY) opacity = Math.min(opacity, state.inverted ? 0.1 : 0.28);
+
       if (li > carLevel && !state.inverted) opacity = Math.min(opacity, 0.22);
-      if (li < carLevel && state.inverted) opacity = Math.min(opacity, 0.22);
+      if (li < carLevel && state.inverted) opacity = Math.min(opacity, 0.2);
     }
     for (const m of mats) {
       m.transparent = opacity < 0.99;
       m.opacity = opacity;
-      m.depthWrite = opacity > 0.7;
+      m.depthWrite = opacity > 0.55;
+    }
+  }
+}
+
+/**
+ * Hide / fade any city building sitting in the camera→car corridor so the
+ * track and Roadster stay visible (critical on portrait mobile FOV).
+ */
+function updateBuildingCutaway() {
+  const carX = roadster.position.x;
+  const camZ = camera.position.z;
+  // Corridor: anything between camera and the track plane (with a small margin)
+  const zNear = Math.min(camZ + 0.5, -0.5);
+  const zFar = -0.4; // just shy of the track centerline
+  for (const city of cities) {
+    for (const child of city.children) {
+      if (!child.userData?.isCityBuilding) continue;
+      const mats = child.userData.cutawayMats;
+      if (!mats) continue;
+      // World Z (city group only translates in X)
+      const wz = child.position.z;
+      const wx = city.position.x + child.position.x;
+      const dx = Math.abs(wx - carX);
+      const inCorridor = wz > zNear && wz < zFar;
+      const nearCar = dx < SEGMENT_LEN * 1.4;
+      let opacity = 1;
+      if (inCorridor && nearCar) {
+        opacity = 0.02; // effectively gone — keep skyline elsewhere
+      } else if (child.userData.cameraSide && nearCar && wz > camZ - 2) {
+        // Camera-side buildings beside the cam: soften so they don't fill the frame
+        opacity = 0.35;
+      }
+      const hide = opacity < 0.08;
+      child.visible = !hide;
+      for (const m of mats) {
+        m.transparent = opacity < 0.99;
+        m.opacity = opacity;
+        m.depthWrite = opacity > 0.6;
+      }
     }
   }
 }
 
 function updateCamera(dt) {
-  // High, side-angled chase: always see current level + neighbors
-  const baseFov = 48;
+  // Side chase; when inverted drop below the hanging deck so the car isn't buried.
+  const portrait = camera.aspect < 0.9;
+  const baseFov = portrait ? 52 : 48;
   const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.55;
   camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
   camera.updateProjectionMatrix();
 
   const midY = (floorY(0) + ceilingY(LEVELS.length - 1)) * 0.5;
-  const focusY = THREE.MathUtils.lerp(state.y, midY, 0.35);
+  const backX = portrait ? -8.2 : -6.5;
+  const sideZ = portrait ? -15.5 : -12.2;
+  let desiredY;
+  if (state.inverted || state.flipping) {
+    // Sit under the car / just below the ceiling slab it's stuck to
+    desiredY = state.y - (portrait ? 2.8 : 2.2);
+  } else {
+    const focusY = THREE.MathUtils.lerp(state.y, midY, 0.35);
+    desiredY = focusY + (portrait ? 9.2 : 7.6);
+  }
   const desired = new THREE.Vector3(
-    roadster.position.x - 6.5,
-    focusY + 7.5,
-    roadster.position.z - 11.5
+    roadster.position.x + backX,
+    desiredY,
+    roadster.position.z + sideZ
   );
-  camPos.lerp(desired, 1 - Math.pow(0.08, dt));
+  // Snap faster when inverted so the car isn't hidden under a deck during the lerp
+  const camFollow = state.inverted || state.flipping ? 0.02 : 0.1;
+  camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
   camTarget.set(
-    roadster.position.x + 5,
-    state.y + (state.inverted ? -0.2 : 0.4),
+    roadster.position.x + (portrait ? 6 : 5),
+    state.y + (state.inverted ? 0.15 : 0.4),
     0
   );
   camera.lookAt(camTarget);
@@ -1502,16 +1630,34 @@ function updateCamera(dt) {
   sun.target.updateMatrixWorld();
 }
 
+/* ── One-time Flip hint ───────────────────────────────────── */
+const hintEl = document.getElementById("play-hint");
+const hintState = { shown: false, t: 0, visible: false };
+
+function showPlayHint(text, duration = 4.2) {
+  if (!hintEl) return;
+  hintEl.textContent = text;
+  hintEl.classList.remove("hidden", "fade");
+  hintState.visible = true;
+  hintState.t = duration;
+}
+
+function updatePlayHint(dt) {
+  if (!hintState.visible || !hintEl) return;
+  hintState.t -= dt;
+  if (hintState.t < 0.7) hintEl.classList.add("fade");
+  if (hintState.t <= 0) {
+    hintEl.classList.add("hidden");
+    hintState.visible = false;
+  }
+}
+
 function updateHUD() {
   if (hudTime) hudTime.textContent = state.time.toFixed(1) + "s";
   if (hudBest) hudBest.textContent = Math.max(bestTime, state.time).toFixed(1) + "s";
   if (hudLevel) hudLevel.textContent = LEVELS[state.level]?.name || "—";
   if (hudSurface) {
-    const onBeam =
-      state.inverted &&
-      onBeamAt(state.level, roadster.position.x) &&
-      !hasDeckAt(state.level, roadster.position.x);
-    hudSurface.textContent = onBeam ? "BEAM" : state.inverted ? "CEILING" : "FLOOR";
+    hudSurface.textContent = state.inverted ? "CEILING" : "FLOOR";
     hudSurface.classList.toggle("ceiling", state.inverted);
   }
   flipBtn?.classList.toggle("active", state.inverted || state.flipping);
@@ -1529,6 +1675,9 @@ function die(reason) {
     } catch (_) {}
   }
   hud?.classList.add("hidden");
+  hintEl?.classList.add("hidden");
+  hintState.visible = false;
+  roadster.userData.thrustLevel = 0;
   if (gameoverReason) gameoverReason.textContent = reason;
   if (finalTime) finalTime.textContent = state.time.toFixed(1);
   if (finalBest) finalBest.textContent = bestTime.toFixed(1) + "s";
@@ -1563,17 +1712,35 @@ function startGame() {
 
     roadster.position.set(0, 0, 0);
     roadster.userData.body.rotation.set(0, 0, 0);
+    roadster.userData.thrustLevel = 0;
     for (const w of roadster.userData.wheels) {
       w.spinner.rotation.x = 0;
       w.hub.position.y = w.baseY;
     }
-    camPos.set(-6.5, 8, -11.5);
+    camPos.set(-6.5, 8, -12.2);
     camera.position.copy(camPos);
     camera.fov = 48;
     camera.updateProjectionMatrix();
 
     resetWorld();
     updateHUD();
+    updateDeckCutaway();
+    updateBuildingCutaway();
+
+    // One-time start hint (touch vs keyboard)
+    if (!hintState.shown) {
+      hintState.shown = true;
+      const touch =
+        matchMedia("(pointer: coarse)").matches ||
+        "ontouchstart" in window ||
+        navigator.maxTouchPoints > 0;
+      showPlayHint(
+        touch
+          ? "Tap Flip to drive on the ceiling. Gaps? Flip or hop levels."
+          : "Shift / Flip: stick to the ceiling. Cross gaps upside down or hop levels.",
+        4.5
+      );
+    }
   } catch (err) {
     console.error("startGame failed", err);
     state.running = false;
@@ -1743,6 +1910,7 @@ window.__ROADSTER__ = {
       w.hub.position.y = w.baseY;
     }
     updateDeckCutaway();
+    updateBuildingCutaway();
   },
   simulate(seconds) {
     const step = 1 / 60;

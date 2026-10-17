@@ -140,11 +140,36 @@ body {
   background: radial-gradient(circle at 35% 30%, #5eead4, #0ea5e9 55%, #0369a1);
   color: white;
   font-family: var(--font-display);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  text-transform: none;
   box-shadow: 0 8px 24px rgba(14, 165, 233, 0.45);
   cursor: pointer;
+}
+
+.play-hint {
+  position: absolute;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(26rem, 88vw);
+  padding: 0.55rem 0.9rem;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: clamp(0.78rem, 2.6vw, 0.95rem);
+  font-weight: 600;
+  line-height: 1.35;
+  color: #e8f4ff;
+  background: rgba(8, 22, 48, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  pointer-events: none;
+  transition: opacity 0.55s ease;
+}
+
+.play-hint.fade {
+  opacity: 0;
 }
 
 #flip-btn:active,
