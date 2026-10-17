@@ -1751,37 +1751,29 @@ function updateBuildingCutaway() {
 }
 
 function updateCamera(dt) {
-  // Side chase; when inverted drop below the hanging deck so the car isn't buried.
+  // Same low chase framing upright and inverted: sit slightly below/behind the
+  // car and look further ahead so the upcoming road and obstacles stay clear.
   const portrait = camera.aspect < 0.9;
   const baseFov = portrait ? 52 : 48;
   const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.55;
   camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
   camera.updateProjectionMatrix();
 
-  const midY = (floorY(0) + ceilingY(LEVELS.length - 1)) * 0.5;
-  const inv = state.inverted || state.flipping;
-  const backX = portrait ? (inv ? -9.5 : -8.2) : -6.5;
-  const sideZ = portrait ? (inv ? -17.5 : -15.5) : (inv ? -13.5 : -12.2);
-  let desiredY;
-  if (inv) {
-    // Side-below: see the car under the deck AND belly jets shooting up into it
-    desiredY = state.y - (portrait ? 1.4 : 1.1);
-  } else {
-    const focusY = THREE.MathUtils.lerp(state.y, midY, 0.35);
-    desiredY = focusY + (portrait ? 9.2 : 7.6);
-  }
+  const backX = portrait ? -9.5 : -7.2;
+  const sideZ = portrait ? -17.5 : -13.5;
+  // Slightly below the car (the framing users liked while inverted on the ceiling)
+  const desiredY = state.y - (portrait ? 1.4 : 1.1);
   const desired = new THREE.Vector3(
     roadster.position.x + backX,
     desiredY,
     roadster.position.z + sideZ
   );
-  // Snap faster when inverted so the car isn't hidden under a deck during the lerp
-  const camFollow = state.inverted || state.flipping ? 0.02 : 0.1;
+  const camFollow = state.inverted || state.flipping ? 0.02 : 0.08;
   camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
   camTarget.set(
-    roadster.position.x + (portrait ? 6 : 5),
-    state.y + (state.inverted ? 0.15 : 0.4),
+    roadster.position.x + (portrait ? 11 : 10),
+    state.y + 0.15,
     0
   );
   camera.lookAt(camTarget);

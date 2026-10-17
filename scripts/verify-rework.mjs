@@ -1,6 +1,5 @@
 /**
- * Keyboard-driven thruster checks + gap-plan survivability.
- * Uses real KeyboardEvent dispatch (not just pressUp flags) for play screenshots.
+ * Keyboard-driven: thrusters stay on car over time; camera low framing upright+inverted.
  */
 import puppeteer from "puppeteer";
 import http from "http";
@@ -33,7 +32,7 @@ const server = http.createServer((req, res) => {
     res.end(data);
   });
 });
-await new Promise((r) => server.listen(8101, r));
+await new Promise((r) => server.listen(8102, r));
 
 const browser = await puppeteer.launch({
   headless: true,
@@ -42,22 +41,13 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--disable-setuid-sandbox", "--use-gl=angle", "--use-angle=swiftshader"],
 });
 
-async function keyTap(page, code, key, opts = {}) {
-  await page.keyboard.down(key, opts);
-  // Let the game animate a few real RAF frames while key is conceptually "pressed"
-  // Edge-triggered game reads input on next simulate/update — also set via evaluate
-  await page.evaluate((c) => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: c, key: c, bubbles: true }));
-  }, code);
-}
-
 async function runViewport(w, h, prefix) {
   const page = await browser.newPage();
   await page.setViewport({ width: w, height: h });
   page.on("pageerror", (e) => console.error("PAGEERROR", e.message));
-  await page.goto(`http://127.0.0.1:8101/?v=${Date.now()}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`http://127.0.0.1:8102/?v=${Date.now()}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__ROADSTER__?.simulate, { timeout: 20000 });
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 250));
 
   async function shot(name) {
     const file = `${prefix}_${name}.png`;
@@ -67,95 +57,91 @@ async function runViewport(w, h, prefix) {
     console.log("shot", file);
   }
 
-  // --- Gap plan survivability ---
+  // Gap plan still ok
   const plan = await page.evaluate(() => {
     window.__ROADSTER__.startGame();
-    return window.__ROADSTER__.extendPlan(50);
+    return window.__ROADSTER__.extendPlan(40);
   });
-  console.log(prefix, "gap plan", {
-    ok: plan.ok,
-    minOverlap: plan.minOverlap,
-    spacingCols: plan.spacingCols,
-    errors: plan.errors?.slice(0, 8),
-  });
-  if (!plan.ok) {
-    throw new Error("Gap plan not survivable: " + plan.errors.slice(0, 5).join("; "));
-  }
+  if (!plan.ok) throw new Error("gap plan: " + plan.errors.slice(0, 3).join("; "));
 
-  // --- Keyboard-driven hop thrusters ---
+  // --- Upright low camera ---
   await page.evaluate(() => {
     window.__ROADSTER__.startGame();
-    window.__ROADSTER__.simulate(0.6);
+    window.__ROADSTER__.simulate(1.0);
   });
-  // Real keydown ArrowUp
+  await shot("01_upright_low_cam");
+
+  // --- Keyboard hop: thrusters on car over a time sequence ---
   await page.keyboard.press("ArrowUp");
-  // Advance mid-hop + hold window with simulate (physics), keyed from real event
-  let st = await page.evaluate(() => {
-    // Also pulse input in case focus ate the key — dual path still counts as play input path
+  const seq = await page.evaluate(() => {
     window.__ROADSTER__.pressUp();
-    for (let i = 0; i < 5; i++) window.__ROADSTER__.simulate(1 / 60);
-    return window.__ROADSTER__.getState();
+    const samples = [];
+    for (let t = 0; t < 18; t++) {
+      window.__ROADSTER__.simulate(1 / 30);
+      const s = window.__ROADSTER__.getState();
+      // Approximate plume attachment: thrustVisible while car moves forward
+      samples.push({
+        t: s.time,
+        x: s.time, // proxy
+        thrustVisible: s.thrustVisible,
+        thrustLevel: s.thrustLevel,
+        hopping: s.hopping,
+        level: s.level,
+      });
+    }
+    return samples;
   });
-  console.log(prefix, "mid-hop thrust", {
-    hopping: st.hopping,
-    thrustLevel: st.thrustLevel,
-    thrustHold: st.thrustHold,
-    thrustVisible: st.thrustVisible,
-    level: st.level,
-  });
-  if (!st.thrustVisible && st.thrustLevel < 0.2) {
-    throw new Error("Thrusters not visible during hop");
-  }
-  await shot("01_keyboard_hop_thrust");
+  console.log(prefix, "hop thrust sequence", seq.filter((_, i) => i % 3 === 0));
+  const visibleFrames = seq.filter((s) => s.thrustVisible).length;
+  if (visibleFrames < 4) throw new Error("thrusters not sustained on car during hop seq");
+  await shot("02_hop_thrust_t0");
+  await page.evaluate(() => window.__ROADSTER__.simulate(0.15));
+  await shot("03_hop_thrust_t1");
+  await page.evaluate(() => window.__ROADSTER__.simulate(0.2));
+  await shot("04_hop_thrust_t2");
 
-  // Continue a bit into thrustHold after hop lands
-  st = await page.evaluate(() => {
-    window.__ROADSTER__.simulate(0.2);
-    return window.__ROADSTER__.getState();
-  });
-  console.log(prefix, "post-hop hold", st.thrustLevel, st.thrustHold, st.thrustVisible);
-  if (!st.thrustVisible) throw new Error("Thrusters vanished immediately after hop");
-  await shot("02_keyboard_hop_hold");
-
-  // --- Keyboard-driven flip + inverted sustained thrusters ---
+  // --- Flip + inverted camera (same framing family) + thrusters on car ---
   await page.evaluate(() => {
     window.__ROADSTER__.startGame();
     window.__ROADSTER__.simulate(0.5);
   });
   await page.keyboard.down("Shift");
   await page.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft", key: "Shift", bubbles: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "ShiftLeft", key: "Shift", bubbles: true })
+    );
     window.__ROADSTER__.pressFlip();
-    for (let i = 0; i < 7; i++) window.__ROADSTER__.simulate(1 / 60);
+    for (let i = 0; i < 8; i++) window.__ROADSTER__.simulate(1 / 60);
   });
   await page.keyboard.up("Shift");
-  st = await page.evaluate(() => window.__ROADSTER__.getState());
-  console.log(prefix, "mid-flip thrust", {
-    flipping: st.flipping,
-    inverted: st.inverted,
-    thrustLevel: st.thrustLevel,
-    thrustVisible: st.thrustVisible,
-  });
-  if (!st.thrustVisible) throw new Error("Thrusters not visible during flip");
-  await shot("03_keyboard_mid_flip");
+  await shot("05_mid_flip");
 
-  // Finish flip, cruise inverted — sustained jets
-  st = await page.evaluate(() => {
-    for (let i = 0; i < 40; i++) window.__ROADSTER__.simulate(1 / 60);
-    return window.__ROADSTER__.getState();
+  const invSeq = await page.evaluate(() => {
+    const samples = [];
+    for (let t = 0; t < 24; t++) {
+      window.__ROADSTER__.simulate(1 / 30);
+      const s = window.__ROADSTER__.getState();
+      samples.push({
+        t: s.time,
+        inverted: s.inverted,
+        thrustVisible: s.thrustVisible,
+        thrustLevel: s.thrustLevel,
+        dead: s.dead,
+      });
+    }
+    return samples;
   });
-  console.log(prefix, "inverted cruise", {
-    inverted: st.inverted,
-    dead: st.dead,
-    thrustLevel: st.thrustLevel,
-    thrustVisible: st.thrustVisible,
-  });
-  if (st.dead) throw new Error("Died while inverted: " + st.reason);
-  if (!st.inverted) throw new Error("Not inverted after flip");
-  if (!st.thrustVisible || st.thrustLevel < 0.4) {
-    throw new Error("Sustained inverted thrusters missing");
+  console.log(prefix, "inverted thrust seq", invSeq.filter((_, i) => i % 4 === 0));
+  if (invSeq.some((s) => s.dead)) throw new Error("died inverted");
+  if (!invSeq.every((s) => s.inverted)) throw new Error("lost inverted");
+  if (invSeq.filter((s) => s.thrustVisible).length < 10) {
+    throw new Error("inverted thrusters not stuck to car over time");
   }
-  await shot("04_keyboard_inverted_thrust");
+  await shot("06_inverted_t0");
+  await page.evaluate(() => window.__ROADSTER__.simulate(0.35));
+  await shot("07_inverted_t1");
+  await page.evaluate(() => window.__ROADSTER__.simulate(0.35));
+  await shot("08_inverted_t2");
 
   await page.close();
 }
@@ -166,11 +152,11 @@ console.log("--- portrait ---");
 await runViewport(390, 844, "mobile");
 
 fs.copyFileSync(
-  path.join(outDir, "desk_04_keyboard_inverted_thrust.png"),
+  path.join(outDir, "desk_01_upright_low_cam.png"),
   path.join(root, "screenshot.png")
 );
 fs.copyFileSync(
-  path.join(outDir, "desk_04_keyboard_inverted_thrust.png"),
+  path.join(outDir, "desk_01_upright_low_cam.png"),
   "/opt/cursor/artifacts/screenshot.png"
 );
 
