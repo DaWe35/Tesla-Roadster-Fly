@@ -219,7 +219,7 @@ async function loadWorldTextures() {
 const hemi = new THREE.HemisphereLight(0xd7ecff, 0x5a6358, 0.55);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xfff1d6, QUALITY === "high" ? 2.6 : 2.1);
+const sun = new THREE.DirectionalLight(0xfff1d6, QUALITY === "high" ? 3.1 : 2.4);
 sun.position.set(-28, 48, 18);
 sun.castShadow = true;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -307,12 +307,14 @@ async function loadEnvironment() {
     const envRT = pmrem.fromEquirectangular(hdr);
     scene.environment = envRT.texture;
     scene.background = envRT.texture;
-    scene.backgroundBlurriness = 0.04;
-    scene.backgroundIntensity = 1.15;
+    scene.backgroundBlurriness = 0.02;
+    scene.backgroundIntensity = 1.05;
+    scene.environmentIntensity = 1.25;
+    // Cool haze — keep HDRI sky readable, not a white wash
     scene.fog = new THREE.Fog(
-      0xb7c6d4,
-      QUALITY === "low" ? 55 : 75,
-      QUALITY === "low" ? 180 : 260
+      0x8fa8bc,
+      QUALITY === "low" ? 70 : 95,
+      QUALITY === "low" ? 220 : 300
     );
     hdr.dispose();
     pmrem.dispose();
@@ -443,12 +445,12 @@ function createEmptyThrusterData(body) {
   const vaporVel = new Float32Array(vaporCount * 3);
   const vaporMatBase = {
     map: null,
-    color: 0xe8eef4,
+    color: 0xf2f5f8,
     transparent: true,
     opacity: 0,
     depthTest: true,
     depthWrite: false,
-    blending: THREE.NormalBlending,
+    blending: THREE.AdditiveBlending,
   };
   for (let i = 0; i < vaporCount; i++) {
     const mat = new THREE.SpriteMaterial({ ...vaporMatBase });
@@ -524,6 +526,8 @@ function createRoadsterPlaceholder() {
 }
 
 function enhanceRoadsterMaterials(root) {
+  // Pearl-white Roadster paint (model may ship blue/gold) — clearcoat for reflections
+  const PAINT = new THREE.Color(0xf2f4f7);
   root.traverse((child) => {
     if (!child.isMesh || !child.material) return;
     child.castShadow = true;
@@ -534,66 +538,103 @@ function enhanceRoadsterMaterials(root) {
       const name = `${mat.name || ""} ${child.name || ""}`.toLowerCase();
       const color = mat.color ? mat.color.clone() : new THREE.Color(0xffffff);
       const isGlass =
-        /glass|window|windshield|transpar|canopy|lens/.test(name) ||
+        /glass|window|windshield|transpar|canopy|lens|tint/.test(name) ||
         (mat.transparent && (mat.opacity ?? 1) < 0.95);
-      const isTail = /tail|rear.?light|brake|stop/.test(name) || color.r > 0.55 && color.g < 0.25 && color.b < 0.25;
+      const isTail =
+        (/tail|rear.?light|glass_rear_lights|stop.?light/.test(name) ||
+          (color.r > 0.55 && color.g < 0.28 && color.b < 0.28 && /light|lamp|glass/.test(name))) &&
+        !/brake_disc|caliper|disc|rim|wheel/.test(name);
       const isHead =
-        /head.?light|lamp|light|led|drl/.test(name) && !isTail;
+        (/head.?light|headlights|drl|aho/.test(name) ||
+          (/indicator/.test(name) && /front|ft|lamp/.test(name))) &&
+        !isTail;
       const isPaint =
-        !isGlass &&
-        !isTail &&
-        !isHead &&
-        (/paint|body|carpaint|exterior|chassis|shell|hood|door|fender|bumper/.test(name) ||
-          (mat.metalness ?? 0) < 0.85);
+        /paint|car_main_paint|body_paint/.test(name) ||
+        // Recolor vivid body panels (blue/gold variants) to pearl white
+        (!/glass|carbon|metal|rim|wheel|seat|interior|grill|light|lamp|tyre|tire|thread|sidewall|chrome|mirror|caliper|brake|disc|indicator/.test(
+          name
+        ) &&
+          (color.b > 0.45 && color.b > color.r + 0.08 && color.b > color.g + 0.05));
+      const isCarbon = /carbon/.test(name);
+      const isRubber = /sidewall|thread|tire|tyre|rubber/.test(name);
+      const isRim = /rim|chrome|mirror/.test(name);
+      const isMetal =
+        /metal|grill|non_lustrous|caliper|brake_disc|disc/.test(name) && !isPaint;
 
       if (isGlass) {
         return new THREE.MeshPhysicalMaterial({
-          color: color.getHex() === 0xffffff ? 0x1a2838 : color,
-          metalness: 0.05,
-          roughness: 0.06,
-          transmission: QUALITY === "high" ? 0.72 : 0,
-          thickness: 0.45,
+          color: /amber/.test(name) ? 0xffb347 : 0x0c1824,
+          metalness: 0.02,
+          roughness: 0.04,
+          transmission: QUALITY === "high" ? 0.78 : 0,
+          thickness: 0.5,
           transparent: true,
-          opacity: QUALITY === "high" ? 0.55 : 0.72,
-          envMapIntensity: 1.5,
+          opacity: QUALITY === "high" ? 0.42 : 0.65,
+          envMapIntensity: 1.8,
           side: THREE.DoubleSide,
         });
       }
       if (isHead) {
         return new THREE.MeshStandardMaterial({
-          color: 0xfff6e8,
-          emissive: 0xffe2a8,
-          emissiveIntensity: QUALITY === "high" ? 2.2 : 1.4,
-          metalness: 0.2,
-          roughness: 0.22,
-          envMapIntensity: 0.6,
+          color: 0xfff8ec,
+          emissive: 0xffe8b8,
+          emissiveIntensity: QUALITY === "high" ? 3.2 : 1.8,
+          metalness: 0.15,
+          roughness: 0.18,
+          envMapIntensity: 0.5,
         });
       }
       if (isTail) {
         return new THREE.MeshStandardMaterial({
-          color: 0xe01128,
-          emissive: 0xff1a2e,
-          emissiveIntensity: QUALITY === "high" ? 1.8 : 1.1,
-          metalness: 0.35,
-          roughness: 0.28,
-          envMapIntensity: 0.7,
+          color: 0xc40018,
+          emissive: 0xff2030,
+          emissiveIntensity: QUALITY === "high" ? 2.4 : 1.4,
+          metalness: 0.25,
+          roughness: 0.22,
+          envMapIntensity: 0.6,
         });
       }
-      if (isPaint || mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
-        const phys = new THREE.MeshPhysicalMaterial({
-          color,
+      if (isRubber) {
+        return new THREE.MeshStandardMaterial({
+          color: 0x0a0a0c,
           map: mat.map || null,
-          normalMap: mat.normalMap || null,
-          roughnessMap: mat.roughnessMap || null,
-          metalnessMap: mat.metalnessMap || null,
-          aoMap: mat.aoMap || null,
-          metalness: Math.min(0.65, Math.max(0.35, mat.metalness ?? 0.45)),
-          roughness: Math.min(0.45, Math.max(0.12, mat.roughness ?? 0.22)),
-          clearcoat: QUALITY === "high" ? 0.9 : 0.45,
-          clearcoatRoughness: 0.12,
-          envMapIntensity: 1.35,
+          roughness: 0.92,
+          metalness: 0.02,
+          envMapIntensity: 0.15,
         });
-        return phys;
+      }
+      if (isRim || isMetal) {
+        return new THREE.MeshStandardMaterial({
+          color: isRim ? 0xd8dde6 : color,
+          metalness: 0.92,
+          roughness: isRim ? 0.18 : 0.35,
+          envMapIntensity: 1.25,
+          map: mat.map || null,
+        });
+      }
+      if (isCarbon) {
+        return new THREE.MeshStandardMaterial({
+          color: 0x1a1c20,
+          map: mat.map || null,
+          roughness: 0.45,
+          metalness: 0.55,
+          envMapIntensity: 0.85,
+        });
+      }
+      if (isPaint) {
+        return new THREE.MeshPhysicalMaterial({
+          color: PAINT,
+          metalness: 0.55,
+          roughness: 0.18,
+          clearcoat: QUALITY === "high" ? 1.0 : 0.55,
+          clearcoatRoughness: 0.08,
+          envMapIntensity: 1.6,
+        });
+      }
+      // Leave other materials mostly intact but boost env response
+      if (mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
+        mat.envMapIntensity = Math.max(mat.envMapIntensity || 0, 1.0);
+        mat.needsUpdate = true;
       }
       return mat;
     });
@@ -670,8 +711,8 @@ async function loadRoadsterModel(root) {
   const size0 = box0.getSize(new THREE.Vector3());
   // After Y rot, length is along X ≈ original Z extent
   const length = Math.max(size0.x, size0.z);
-  let scale = 4.25 / length;
-  scale = THREE.MathUtils.clamp(scale, 0.95, 1.05);
+  let scale = 4.55 / length;
+  scale = THREE.MathUtils.clamp(scale, 0.92, 1.12);
   model.scale.setScalar(scale);
 
   model.updateMatrixWorld(true);
@@ -762,20 +803,24 @@ const particles = [];
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
   const cutawayMats = [];
-  const useBrick = Math.random() > 0.42;
+  // Prefer glass facade towers; brick for lower masonry
+  const useBrick = h < 9 && Math.random() > 0.35;
   const src = useBrick ? maps.brick : maps.facade;
+  const tint = useBrick
+    ? new THREE.Color(color).lerp(new THREE.Color(0x8a7a6a), 0.55)
+    : new THREE.Color(0xb8c4d0).lerp(new THREE.Color(color), 0.25);
   const diff = cloneMap(src.diff, Math.max(1, Math.round(w / 2.4)), Math.max(2, Math.round(h / 3.0)));
   const nor = cloneMap(src.nor, diff.repeat.x, diff.repeat.y);
   const rough = cloneMap(src.rough, diff.repeat.x, diff.repeat.y);
   const bodyMat = new THREE.MeshStandardMaterial({
-    color,
+    color: tint,
     map: diff,
     normalMap: nor,
-    normalScale: new THREE.Vector2(0.7, 0.7),
+    normalScale: new THREE.Vector2(useBrick ? 1.1 : 0.55, useBrick ? 1.1 : 0.55),
     roughnessMap: rough,
-    roughness: 0.78,
-    metalness: useBrick ? 0.08 : 0.22,
-    envMapIntensity: 0.4,
+    roughness: useBrick ? 0.82 : 0.35,
+    metalness: useBrick ? 0.06 : 0.55,
+    envMapIntensity: useBrick ? 0.35 : 1.1,
   });
   cutawayMats.push(bodyMat);
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
@@ -784,22 +829,25 @@ function makeBuilding(w, h, d, color) {
   mesh.receiveShadow = true;
   g.add(mesh);
 
-  const winMat = new THREE.MeshStandardMaterial({
-    color: 0xcfefff,
-    emissive: 0x7ab8d8,
-    emissiveIntensity: 0.45 + Math.random() * 0.4,
-    roughness: 0.22,
-    metalness: 0.4,
-    envMapIntensity: 0.85,
+  const winMat = new THREE.MeshPhysicalMaterial({
+    color: 0xa8d4f0,
+    emissive: 0x6a9ec0,
+    emissiveIntensity: 0.35 + Math.random() * 0.45,
+    roughness: 0.12,
+    metalness: 0.15,
+    transmission: QUALITY === "high" ? 0.25 : 0,
+    transparent: true,
+    opacity: 0.85,
+    envMapIntensity: 1.4,
   });
   cutawayMats.push(winMat);
-  const rows = Math.max(2, Math.floor(h / 1.45));
-  const cols = Math.max(2, Math.floor(w / 1.1));
+  const rows = Math.max(2, Math.floor(h / 1.35));
+  const cols = Math.max(2, Math.floor(w / 1.0));
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (Math.random() > 0.55) continue;
+      if (Math.random() > (useBrick ? 0.5 : 0.28)) continue;
       const win = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.3 + Math.random() * 0.1, 0.38 + Math.random() * 0.1),
+        new THREE.PlaneGeometry(0.32 + Math.random() * 0.08, 0.4 + Math.random() * 0.08),
         winMat
       );
       win.position.set(
@@ -812,10 +860,11 @@ function makeBuilding(w, h, d, color) {
   }
 
   const sideMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color).multiplyScalar(0.78),
+    color: tint.clone().multiplyScalar(0.72),
     map: cloneMap(maps.brick.diff, Math.max(1, d / 3), Math.max(2, h / 3)),
-    roughness: 0.85,
-    metalness: 0.1,
+    roughness: 0.8,
+    metalness: 0.12,
+    envMapIntensity: 0.35,
   });
   cutawayMats.push(sideMat);
   for (const side of [-1, 1]) {
@@ -1113,12 +1162,13 @@ function createDeckSurface(levelIndex, zCenter) {
   const g = new THREE.Group();
   const ly = LEVELS[levelIndex].y;
   const width = levelIndex === 0 ? 10 : levelIndex === 1 ? 8.5 : 7.5;
-  const deckTints = [0xffffff, 0xd8e4f2, 0xf0ddd0];
-  const railColors = [0xffd166, 0x06d6a0, 0xef476f];
+  // Subtle level tints on dark asphalt — avoid neon toy rails
+  const deckTints = [0x9a9ea6, 0x8e9aaa, 0xa09088];
+  const railColors = [0xc4b896, 0x7a9e96, 0xb08088];
   const cutawayMats = [];
 
-  const repX = SEGMENT_LEN / 8;
-  const repY = width / 4;
+  const repX = SEGMENT_LEN / 6;
+  const repY = width / 3;
   const asphaltMap = cloneMap(maps.asphalt.diff, repX, repY);
   const asphaltNor = cloneMap(maps.asphalt.nor, repX, repY);
   const asphaltRough = cloneMap(maps.asphalt.rough, repX, repY);
@@ -1127,13 +1177,13 @@ function createDeckSurface(levelIndex, zCenter) {
     color: deckTints[levelIndex],
     map: asphaltMap,
     normalMap: asphaltNor,
-    normalScale: new THREE.Vector2(0.85, 0.85),
+    normalScale: new THREE.Vector2(1.35, 1.35),
     roughnessMap: asphaltRough,
     aoMap: asphaltAO,
-    aoMapIntensity: 0.9,
-    roughness: 0.95,
-    metalness: 0.04,
-    envMapIntensity: 0.22,
+    aoMapIntensity: 1.0,
+    roughness: 0.98,
+    metalness: 0.02,
+    envMapIntensity: 0.18,
   });
   cutawayMats.push(roadMat);
   const roadGeo = new THREE.BoxGeometry(SEGMENT_LEN, 0.4, width);
@@ -1188,7 +1238,9 @@ function createDeckSurface(levelIndex, zCenter) {
       new THREE.MeshStandardMaterial({
         color: railColors[levelIndex],
         emissive: railColors[levelIndex],
-        emissiveIntensity: 0.2,
+        emissiveIntensity: 0.06,
+        metalness: 0.55,
+        roughness: 0.35,
       })
     );
     underStripe.position.set(0, ly - 0.85, 0);
@@ -1265,10 +1317,11 @@ function createDeckSurface(levelIndex, zCenter) {
       new THREE.BoxGeometry(SEGMENT_LEN, 0.45, 0.32),
       new THREE.MeshStandardMaterial({
         color: railColors[levelIndex],
-        metalness: 0.45,
-        roughness: 0.4,
+        metalness: 0.62,
+        roughness: 0.32,
         emissive: railColors[levelIndex],
-        emissiveIntensity: 0.12,
+        emissiveIntensity: 0.04,
+        envMapIntensity: 0.7,
       })
     );
     curb.position.set(0, ly + 0.15, side * (width / 2));
@@ -1950,11 +2003,11 @@ function spawnVapor(ud, lvl) {
   vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.75;
   vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.5;
   vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.5;
-  vaporLife[slot] = 0.18 + Math.random() * 0.16;
-  const base = 0.22 + lvl * 0.2;
+  vaporLife[slot] = 0.28 + Math.random() * 0.22;
+  const base = 0.28 + lvl * 0.28;
   spr.scale.setScalar(base);
-  spr.material.opacity = 0.55 + lvl * 0.35;
-  spr.material.color.setHex(Math.random() > 0.5 ? 0xf4f7fa : 0xd8dee6);
+  spr.material.opacity = 0.7 + lvl * 0.35;
+  spr.material.color.setHex(Math.random() > 0.45 ? 0xffffff : 0xd4dae2);
   spr.visible = true;
 }
 
