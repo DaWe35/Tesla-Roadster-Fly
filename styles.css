@@ -65,24 +65,11 @@ body {
 }
 
 .hud-stat {
-  min-width: 5.5rem;
-  padding: 0.45rem 0.7rem;
+  min-width: 4.5rem;
+  padding: 0.4rem 0.65rem;
   background: linear-gradient(180deg, rgba(12, 28, 52, 0.75), rgba(8, 18, 36, 0.55));
   border: 1px solid rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(8px);
-}
-
-.hud-stat .label,
-.gas-wrap .label {
-  display: block;
-  font-family: var(--font-display);
-  font-size: 0.55rem;
-  letter-spacing: 0.16em;
-  color: var(--muted);
-  margin-bottom: 0.15rem;
-}
-
-.hud-stat span:last-child {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 1.05rem;
@@ -96,39 +83,9 @@ body {
   bottom: 0;
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
+  justify-content: center;
   padding: 1rem 1.1rem 1.25rem;
   pointer-events: none;
-}
-
-.surface-wrap {
-  flex: 1;
-  max-width: 12rem;
-  padding: 0.45rem 0.7rem;
-  background: linear-gradient(180deg, rgba(12, 28, 52, 0.75), rgba(8, 18, 36, 0.55));
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  pointer-events: none;
-}
-
-.surface-wrap .label {
-  display: block;
-  font-family: var(--font-display);
-  font-size: 0.55rem;
-  letter-spacing: 0.16em;
-  color: var(--muted);
-  margin-bottom: 0.15rem;
-}
-
-.surface-value {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 1.05rem;
-  color: var(--good);
-}
-
-.surface-value.ceiling {
-  color: #7dd3fc;
 }
 
 #flip-btn {

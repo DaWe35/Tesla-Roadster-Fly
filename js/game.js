@@ -42,8 +42,6 @@ const retryBtn = document.getElementById("retry-btn");
 const flipBtn = document.getElementById("flip-btn");
 const hudTime = document.getElementById("hud-time");
 const hudBest = document.getElementById("hud-best");
-const hudLevel = document.getElementById("hud-level");
-const hudSurface = document.getElementById("hud-surface");
 const startBest = document.getElementById("start-best");
 const finalTime = document.getElementById("final-time");
 const finalBest = document.getElementById("final-best");
@@ -386,14 +384,14 @@ function createRoadster() {
     wheels.push({ hub, spinner, baseY: y });
   }
 
-  // Cold-gas thrusters — parented to body at nozzles so they never drift.
-  // Local −Y = belly → floor upright / ceiling when body.roll = π.
+  // Cold-gas thrusters — compact jets from nozzles along body −Y (belly).
+  // depthTest ON so they don't paint through the car/road; soft additive look.
   const mkThrustMat = (color, opacity = 0) =>
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
       opacity,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
@@ -401,47 +399,35 @@ function createRoadster() {
   const plumes = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
-    // Match nozzle layout (rear bay)
     const sz = i < 2 ? -0.28 : 0.28;
     const sy = i % 2 === 0 ? 0.18 : 0.32;
-    group.position.set(-2.7, sy, sz);
+    // Sit just outside the nozzle lip
+    group.position.set(-2.78, sy, sz);
 
-    // Cone default +Y; Rx=π aims tip along body −Y (belly)
+    // Cone tip along −Y (belly). Base near nozzle, tip away.
     const core = new THREE.Mesh(
-      new THREE.ConeGeometry(0.28, 2.2, 10, 1, true),
-      mkThrustMat(0xffffff, 0)
+      new THREE.ConeGeometry(0.09, 0.85, 8, 1, true),
+      mkThrustMat(0xe0f7ff, 0)
     );
     core.rotation.x = Math.PI;
-    core.position.y = -1.1;
-    core.renderOrder = 1001;
+    core.position.y = -0.42;
     group.add(core);
 
     const glow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.5, 3.0, 10, 1, true),
+      new THREE.ConeGeometry(0.16, 1.15, 8, 1, true),
       mkThrustMat(0x38bdf8, 0)
     );
     glow.rotation.x = Math.PI;
-    glow.position.y = -1.4;
-    glow.renderOrder = 1000;
+    glow.position.y = -0.5;
     group.add(glow);
-
-    const halo = new THREE.Mesh(
-      new THREE.CircleGeometry(0.45, 16),
-      mkThrustMat(0xe0f2fe, 0)
-    );
-    halo.rotation.x = Math.PI / 2;
-    halo.position.y = -0.05;
-    halo.renderOrder = 1002;
-    group.add(halo);
 
     group.visible = false;
     body.add(group);
-    plumes.push({ group, core, glow, halo });
+    plumes.push({ group, core, glow });
   }
 
-  // Particles live on the scene in true world space (not under root — that
-  // previously double-counted roadster.position and made jets fly away).
-  const jetCount = 64;
+  // Short-lived spark particles in true world space (scene-parented below)
+  const jetCount = 36;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
   const jetVel = new Float32Array(jetCount * 3);
@@ -454,29 +440,17 @@ function createRoadster() {
   const jets = new THREE.Points(
     jetGeo,
     new THREE.PointsMaterial({
-      color: 0xffffff,
-      size: 0.45,
+      color: 0xb8f4ff,
+      size: 0.18,
       transparent: true,
       opacity: 0,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
     })
   );
   jets.frustumCulled = false;
-  jets.renderOrder = 1003;
-  // attached to scene after roadster is created — see below
-
-  // Hold flare on body, offset along belly (−Y)
-  const holdFlare = new THREE.Mesh(
-    new THREE.SphereGeometry(0.65, 12, 10),
-    mkThrustMat(0x7dd3fc, 0)
-  );
-  holdFlare.position.set(-2.4, -0.85, 0);
-  holdFlare.renderOrder = 1004;
-  holdFlare.visible = false;
-  body.add(holdFlare);
 
   const _q = new THREE.Quaternion();
   const _belly = new THREE.Vector3();
@@ -489,7 +463,6 @@ function createRoadster() {
     jetLights,
     plumes,
     jets,
-    holdFlare,
     jetPos,
     jetVel,
     jetLife,
@@ -1213,7 +1186,12 @@ function spawnSegment(xCenter, safe = false) {
   worldRoot.add(city);
   cities.push(city);
 
-  if (!safe && anySolid) placeHazards(xCenter);
+  if (anySolid) {
+    // Opening stretch (gap-safe): dense easy floor obstacles from second one.
+    // Later columns: normal density that scales up with time.
+    if (safe && idx >= 1) placeHazards(xCenter, true);
+    else if (!safe) placeHazards(xCenter, false);
+  }
   nextSegmentX = Math.max(nextSegmentX, xCenter + SEGMENT_LEN);
 }
 
@@ -1276,22 +1254,28 @@ function validateGapPlan() {
   return { ok: errors.length === 0, errors, minOverlap: minOv, spacingCols: sep };
 }
 
-function placeHazards(xCenter) {
-  // Gentle ease-in for 30s+ new-player runs
-  const difficulty = Math.min(1, Math.max(0, (state.time - 18) / 100));
+/**
+ * Obstacles: solid easy density from the opening, then scales up.
+ * `opening` = first stretch (gap-safe columns) — lots of telegraphed floor barriers.
+ */
+function placeHazards(xCenter, opening = false) {
+  const progress = Math.min(1, Math.max(0, state.time / 75));
+  // Opening keeps a high floor-barrier rate; later adds trains/ceiling threats
+  const floorChance = opening ? 0.72 : 0.38 + progress * 0.28;
+  const ceilChance = opening ? 0.08 : 0.12 + progress * 0.22;
+  const trainChance = opening ? 0.06 : 0.1 + progress * 0.22;
 
-  if (rand() < 0.14 + difficulty * 0.16) {
-    const level = rand() < 0.55 ? 0 : 1;
-    const train = makeTrain(10 + ((rand() * 6) | 0));
-    train.position.set(xCenter + (rand() - 0.5) * 6, floorY(level), 0);
-    train.userData.level = level;
-    train.userData.onCeiling = false;
-    train.userData.speed = 2 + rand() * 3;
-    worldRoot.add(train);
-    trains.push(train);
-  }
-
-  if (rand() < 0.1 + difficulty * 0.15) {
+  // Opening: 1–2 telegraphed floor barriers almost every column
+  if (opening) {
+    const n = 1 + (rand() < 0.65 ? 1 : 0);
+    for (let i = 0; i < n; i++) {
+      const level = rand() < 0.7 ? 0 : 1;
+      const bar = makeBarrier(level, false);
+      bar.position.set(xCenter + (rand() - 0.5) * 5, 0, 0);
+      worldRoot.add(bar);
+      obstacles.push(bar);
+    }
+  } else if (rand() < floorChance) {
     const level = (rand() * 3) | 0;
     const bar = makeBarrier(level, false);
     bar.position.set(xCenter + (rand() - 0.5) * 8, 0, 0);
@@ -1299,12 +1283,23 @@ function placeHazards(xCenter) {
     obstacles.push(bar);
   }
 
-  if (rand() < 0.1 + difficulty * 0.15) {
-    const level = (rand() * 3) | 0;
-    const hazard = rand() < 0.5 ? makeCeilingSpike(level) : makeBarrier(level, true);
-    hazard.position.set(xCenter + (rand() - 0.5) * 8, 0, 0);
+  if (rand() < ceilChance) {
+    const level = opening ? 0 : (rand() * 3) | 0;
+    const hazard = opening || rand() < 0.4 ? makeBarrier(level, true) : makeCeilingSpike(level);
+    hazard.position.set(xCenter + (rand() - 0.5) * 6, 0, 0);
     worldRoot.add(hazard);
     obstacles.push(hazard);
+  }
+
+  if (rand() < trainChance) {
+    const level = rand() < 0.65 ? 0 : 1;
+    const train = makeTrain(opening ? 8 : 10 + ((rand() * 6) | 0));
+    train.position.set(xCenter + (rand() - 0.5) * 5, floorY(level), 0);
+    train.userData.level = level;
+    train.userData.onCeiling = false;
+    train.userData.speed = opening ? 1.5 + rand() * 1.5 : 2 + rand() * 3;
+    worldRoot.add(train);
+    trains.push(train);
   }
 }
 
@@ -1565,12 +1560,11 @@ function updateTrains(dt) {
 }
 
 /**
- * Thrusters (visual only), anchored to the car.
- * Bug: world-space plume positions were written into objects parented under the
- * moving roadster root, so local = world double-counted X and jets flew away.
- * Fix: plumes/flare parented to body; particles on the scene in true world space.
+ * Thrusters (visual only). Compact body-local plumes + short world sparks.
+ * Prior weirdness: oversized depthTest:false cones/flare drew through the car
+ * and road; particles ignored car forward speed so trails streaked oddly.
  */
-function burstThrusters(amount = 1, hold = 0.5) {
+function burstThrusters(amount = 1, hold = 0.45) {
   const ud = roadster.userData;
   ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
   ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
@@ -1582,45 +1576,32 @@ function updateThrusters(dt) {
 
   let target = 0;
   if (state.hopping || state.flipping) target = 1;
-  else if (ud.thrustHold > 0) target = 0.95;
-  else if (state.inverted && state.running && !state.dead) target = 0.85;
+  else if (ud.thrustHold > 0) target = 0.9;
+  else if (state.inverted && state.running && !state.dead) target = 0.7;
 
-  if (target >= (ud.thrustLevel || 0)) ud.thrustLevel = target;
-  else {
-    ud.thrustLevel = THREE.MathUtils.lerp(
-      ud.thrustLevel || 0,
-      target,
-      1 - Math.pow(0.12, dt)
-    );
+  if (target >= (ud.thrustLevel || 0)) {
+    ud.thrustLevel = THREE.MathUtils.lerp(ud.thrustLevel || 0, target, 1 - Math.pow(0.002, dt));
+  } else {
+    ud.thrustLevel = THREE.MathUtils.lerp(ud.thrustLevel || 0, target, 1 - Math.pow(0.15, dt));
   }
   const lvl = ud.thrustLevel || 0;
-  const active = lvl > 0.05;
+  const active = lvl > 0.04;
 
   for (const light of ud.jetLights) {
-    light.intensity = active ? 2.5 + lvl * 4 : 0;
-    light.distance = 8 + lvl * 6;
+    light.intensity = active ? 0.8 + lvl * 1.6 : 0;
+    light.distance = 3.5 + lvl * 2;
     light.color.setHex(0x7dd3fc);
   }
 
-  // Plumes stay on body — only pulse opacity/scale each frame
   ud.plumes.forEach((p, i) => {
     p.group.visible = active;
-    const pulse = 1 + Math.sin(state.time * 26 + i * 1.7) * 0.08;
-    p.group.scale.setScalar((1.05 + lvl * 0.75) * pulse);
-    p.core.material.opacity = active ? 0.85 + lvl * 0.15 : 0;
-    p.glow.material.opacity = active ? 0.55 + lvl * 0.4 : 0;
-    p.halo.material.opacity = active ? 0.65 + lvl * 0.35 : 0;
+    // Mild flicker — no huge scale pops
+    const pulse = 1 + Math.sin(state.time * 22 + i * 1.4) * 0.04;
+    const len = (0.85 + lvl * 0.45) * pulse;
+    p.group.scale.set(0.9 + lvl * 0.2, len, 0.9 + lvl * 0.2);
+    p.core.material.opacity = active ? 0.55 + lvl * 0.35 : 0;
+    p.glow.material.opacity = active ? 0.28 + lvl * 0.32 : 0;
   });
-
-  if (ud.holdFlare) {
-    const showFlare = active && (state.inverted || state.flipping || ud.thrustHold > 0);
-    ud.holdFlare.visible = showFlare;
-    if (showFlare) {
-      ud.holdFlare.material.opacity = 0.4 + lvl * 0.45;
-      const fs = 0.95 + lvl * 1.05 + Math.sin(state.time * 20) * 0.12;
-      ud.holdFlare.scale.setScalar(fs);
-    }
-  }
 
   const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
   body.updateWorldMatrix(true, false);
@@ -1628,7 +1609,7 @@ function updateThrusters(dt) {
   _belly.set(0, -1, 0).applyQuaternion(_q);
 
   if (active) {
-    const spawnN = state.hopping || state.flipping || ud.thrustHold > 0 ? 4 : 2;
+    const spawnN = state.hopping || state.flipping ? 2 : 1;
     for (let s = 0; s < spawnN; s++) {
       let slot = -1;
       for (let i = 0; i < jetCount; i++) {
@@ -1640,15 +1621,15 @@ function updateThrusters(dt) {
       if (slot < 0) continue;
       const nz = ud.nozzles[s % ud.nozzles.length];
       nz.getWorldPosition(_origin);
-      // True world coords — jets object is on the scene, not under roadster
-      jetPos[slot * 3] = _origin.x + (Math.random() - 0.5) * 0.25;
-      jetPos[slot * 3 + 1] = _origin.y + (Math.random() - 0.5) * 0.2;
-      jetPos[slot * 3 + 2] = _origin.z + (Math.random() - 0.5) * 0.25;
-      const speed = 6 + lvl * 10 + Math.random() * 4;
-      jetVel[slot * 3] = _belly.x * speed + (Math.random() - 0.5) * 2;
-      jetVel[slot * 3 + 1] = _belly.y * speed + (Math.random() - 0.5) * 2;
-      jetVel[slot * 3 + 2] = _belly.z * speed + (Math.random() - 0.5) * 2;
-      jetLife[slot] = 0.28 + Math.random() * 0.25;
+      jetPos[slot * 3] = _origin.x + (Math.random() - 0.5) * 0.08;
+      jetPos[slot * 3 + 1] = _origin.y + (Math.random() - 0.5) * 0.06;
+      jetPos[slot * 3 + 2] = _origin.z + (Math.random() - 0.5) * 0.08;
+      // Carry car forward speed so sparks don't streak sideways relative to motion
+      const jetSpeed = 3.5 + lvl * 4;
+      jetVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.85;
+      jetVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.6;
+      jetVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.6;
+      jetLife[slot] = 0.12 + Math.random() * 0.1;
     }
   }
   for (let i = 0; i < jetCount; i++) {
@@ -1663,8 +1644,8 @@ function updateThrusters(dt) {
     if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
   }
   jets.geometry.attributes.position.needsUpdate = true;
-  jets.material.opacity = active ? 0.75 + lvl * 0.25 : 0;
-  jets.material.size = 0.35 + lvl * 0.35;
+  jets.material.opacity = active ? 0.45 + lvl * 0.35 : 0;
+  jets.material.size = 0.12 + lvl * 0.12;
 }
 
 /** Fade decks between camera and car — critical when inverted under a slab. */
@@ -1812,11 +1793,6 @@ function updatePlayHint(dt) {
 function updateHUD() {
   if (hudTime) hudTime.textContent = state.time.toFixed(1) + "s";
   if (hudBest) hudBest.textContent = Math.max(bestTime, state.time).toFixed(1) + "s";
-  if (hudLevel) hudLevel.textContent = LEVELS[state.level]?.name || "—";
-  if (hudSurface) {
-    hudSurface.textContent = state.inverted ? "CEILING" : "FLOOR";
-    hudSurface.classList.toggle("ceiling", state.inverted);
-  }
   flipBtn?.classList.toggle("active", state.inverted || state.flipping);
 }
 
@@ -1865,7 +1841,7 @@ function startGame() {
       wheelSpin: 0,
       suspension: 0,
       reason: "",
-      invuln: 1.8,
+      invuln: 0.85,
     });
 
     roadster.position.set(0, 0, 0);
