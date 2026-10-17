@@ -66,7 +66,7 @@ try {
   bestTime = 0;
 }
 if (startBest) startBest.textContent = bestTime.toFixed(1) + "s";
-if (hudBest) hudBest.textContent = bestTime.toFixed(1) + "s";
+if (hudBest) hudBest.textContent = "Best " + bestTime.toFixed(1) + "s";
 
 if (!canvas || !startBtn) {
   throw new Error("Missing required DOM (#game-canvas / #start-btn). Check index.html.");
@@ -687,8 +687,9 @@ function createRoadsterPlaceholder() {
 }
 
 function enhanceRoadsterMaterials(root) {
-  // Pearl-white Roadster paint (model may ship blue/gold) — clearcoat for reflections
-  const PAINT = new THREE.Color(0xf2f4f7);
+  // Oct 2026 production Roadster (McGregor press): satin silver/white upper + dark lower cladding.
+  // No licensed GLB of that redesign exists yet — restyle the 2020 mesh materials to match.
+  const PAINT = new THREE.Color(0xe8ecf0);
   root.traverse((child) => {
     if (!child.isMesh || !child.material) return;
     child.castShadow = true;
@@ -775,21 +776,21 @@ function enhanceRoadsterMaterials(root) {
       }
       if (isCarbon) {
         return new THREE.MeshStandardMaterial({
-          color: 0x1a1c20,
+          color: 0x0a0b0e, // deep black lower aero (2026 diffuser / skirts)
           map: mat.map || null,
-          roughness: 0.45,
-          metalness: 0.55,
-          envMapIntensity: 0.85,
+          roughness: 0.55,
+          metalness: 0.35,
+          envMapIntensity: 0.55,
         });
       }
       if (isPaint) {
         return new THREE.MeshPhysicalMaterial({
           color: PAINT,
-          metalness: 0.55,
-          roughness: 0.18,
-          clearcoat: QUALITY === "high" ? 1.0 : 0.55,
-          clearcoatRoughness: 0.08,
-          envMapIntensity: 1.6,
+          metalness: 0.42,
+          roughness: 0.28, // satin / soft clearcoat like studio press photos
+          clearcoat: QUALITY === "high" ? 0.65 : 0.35,
+          clearcoatRoughness: 0.22,
+          envMapIntensity: 1.25,
         });
       }
       // Leave other materials mostly intact but boost env response
@@ -863,8 +864,8 @@ async function loadRoadsterModel(root) {
   const model = gltf.scene;
   model.name = "tesla-roadster-2020";
 
-  // Model forward = +Z → game forward +X
-  model.rotation.y = -Math.PI / 2;
+  // Model forward = +Z → game forward +X (θ=+π/2). −π/2 faced the car backwards.
+  model.rotation.y = Math.PI / 2;
 
   // Fit length along X to ~4.2 units
   model.updateMatrixWorld(true);
@@ -914,17 +915,19 @@ async function loadRoadsterModel(root) {
     }
   }
 
-  // SpaceX-package thruster bay: rear diffuser undercarriage (body −X after Y-rot)
+  // SpaceX-package thruster bay: real rear = min X after +π/2 (nose = +X)
   model.updateMatrixWorld(true);
   const boxBody = new THREE.Box3().setFromObject(model);
   const bay = root.userData.thrusterBay;
   if (bay) {
-    bay.position.set(
-      boxBody.min.x + 0.25,
-      boxBody.min.y + 0.05,
-      0
-    );
+    bay.position.set(boxBody.min.x + 0.22, boxBody.min.y + 0.06, 0);
   }
+  // Headlight glows at the nose (+X)
+  body.traverse((o) => {
+    if (o.isPointLight && o.color && o.color.getHex() === 0xfff0c8) {
+      o.position.x = Math.abs(o.position.x) || 2.1;
+    }
+  });
   // Primary nozzles: horizontal row across rear (local Z), pointing −Y
   const primaryZ = [-0.38, -0.15, 0.15, 0.38];
   root.userData.nozzles.forEach((nz, i) => {
@@ -1518,7 +1521,8 @@ function createDeckSurface(levelIndex, zCenter) {
     ao: levelIndex === 0,
   });
   cutawayMats.push(roadMat);
-  const roadGeo = new THREE.BoxGeometry(SEGMENT_LEN, 0.4, width);
+  // Slight X overlap so abutting segments never show a hairline gap
+  const roadGeo = new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.4, width);
   if (roadGeo.attributes.uv && roadMat.aoMap) {
     roadGeo.setAttribute("uv2", roadGeo.attributes.uv);
   }
@@ -1548,15 +1552,15 @@ function createDeckSurface(levelIndex, zCenter) {
     const cRepX = SEGMENT_LEN / 8;
     const cRepY = width / 4;
     const underMat = pbrFrom(maps.concretePanel, cRepX, cRepY, {
-      color: levelIndex === 1 ? 0xd8e4f0 : 0xecd8c8,
-      metalness: 0.14,
-      roughness: 0.78,
-      envMapIntensity: 0.55,
+      color: levelIndex === 1 ? 0xc8d0d8 : 0xd8c8bc, // solid concrete, not glassy blue
+      metalness: 0.06,
+      roughness: 0.88,
+      envMapIntensity: 0.28,
       normalScale: new THREE.Vector2(1.15, 1.15),
     });
     cutawayMats.push(underMat);
     const under = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN, 0.55, width + 0.6),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.55, width + 0.6),
       underMat
     );
     under.position.set(0, ly - 0.55, 0);
@@ -1566,9 +1570,9 @@ function createDeckSurface(levelIndex, zCenter) {
     // Edge fascia under the deck lip
     const fasciaMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.6, {
       color: railTints[levelIndex],
-      metalness: 0.18,
-      roughness: 0.7,
-      envMapIntensity: 0.45,
+      metalness: 0.08,
+      roughness: 0.82,
+      envMapIntensity: 0.28,
     });
     cutawayMats.push(fasciaMat);
     const underStripe = new THREE.Mesh(
@@ -1582,10 +1586,10 @@ function createDeckSurface(levelIndex, zCenter) {
     // Soffit detail: beam ribs, expansion joints, recessed lights
     const soffitY = ly - 0.55 - 0.02;
     const beamMat = pbrFrom(maps.concretePanel, 0.4, width / 3, {
-      color: 0xc2c8d0,
-      roughness: 0.78,
-      metalness: 0.12,
-      envMapIntensity: 0.5,
+      color: 0xa8b0ba, // cool concrete — avoid wood-brown tint
+      roughness: 0.82,
+      metalness: 0.08,
+      envMapIntensity: 0.4,
       normalScale: new THREE.Vector2(1.0, 1.0),
     });
     cutawayMats.push(beamMat);
@@ -1745,16 +1749,15 @@ function createDeckSurface(levelIndex, zCenter) {
   });
   cutawayMats.push(pillarMat);
 
-  // Textured curb / rail — metal on elevated decks, concrete wall on street
-  const curbSrc = levelIndex === 0 ? maps.concreteWall : maps.metal;
-  const curbMat = pbrFrom(curbSrc, SEGMENT_LEN / 5, 0.5, {
+  // Textured curb / rail — matte concrete (never metal/glass)
+  const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 5, 0.5, {
     color: railTints[levelIndex],
-    metalness: levelIndex === 0 ? 0.18 : 0.72,
-    roughness: levelIndex === 0 ? 0.75 : 0.32,
-    envMapIntensity: levelIndex === 0 ? 0.35 : 0.9,
+    metalness: 0.06,
+    roughness: 0.88,
+    envMapIntensity: 0.22,
     normalScale: new THREE.Vector2(1.2, 1.2),
   });
-  cutawayMats.push(curbMat);
+  // Do NOT put curbMat in cutawayMats — must stay solid opaque
 
   for (const side of [-1, 1]) {
     const curb = new THREE.Mesh(
@@ -1793,6 +1796,7 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex === 0) {
+    // Sidewalk sits clearly ABOVE ground strips (y≈−0.05) to avoid z-fighting
     const walkMat = pbrFrom(maps.cobble, SEGMENT_LEN / 5, 1.4, {
       color: 0xc4c0b8,
       roughness: 0.88,
@@ -1800,27 +1804,52 @@ function createDeckSurface(levelIndex, zCenter) {
       envMapIntensity: 0.22,
       normalScale: new THREE.Vector2(1.3, 1.3),
     });
-    cutawayMats.push(walkMat);
+    walkMat.polygonOffset = true;
+    walkMat.polygonOffsetFactor = -1;
+    walkMat.polygonOffsetUnits = -1;
+    // Do NOT put walk/curb mats in cutawayMats — they must stay opaque
     const potMat = pbrFrom(maps.concreteWall, 1, 1, {
       color: 0xa89888,
       roughness: 0.85,
       metalness: 0.08,
       envMapIntensity: 0.3,
     });
-    cutawayMats.push(potMat);
+    const walkH = 0.22;
+    const walkTop = ly + 0.12;
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, 0.28, 1.9),
+        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.7),
         walkMat
       );
-      walk.position.set(0, ly + 0.06, side * 5.6);
+      // Keep clear of road curb at |z|=width/2 (5.0) and ground plaza
+      walk.position.set(0, walkTop - walkH / 2, side * 6.35);
       walk.receiveShadow = true;
+      walk.castShadow = true;
       g.add(walk);
 
-      for (let i = 0; i < 4; i++) {
-        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), potMat);
-        pot.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, ly + 0.45, side * 5.6);
+      // Curb lip between road shoulder and sidewalk (distinct height)
+      const lip = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN, 0.14, 0.22),
+        pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.3, {
+          color: 0xb8b4ac,
+          roughness: 0.9,
+          metalness: 0.05,
+        })
+      );
+      lip.position.set(0, ly + 0.07, side * 5.35);
+      lip.receiveShadow = true;
+      g.add(lip);
+
+      // Planters sit ON the sidewalk top (not floating)
+      for (let i = 0; i < 3; i++) {
+        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.5, 0.55), potMat);
+        pot.position.set(
+          -SEGMENT_LEN / 2 + 5 + i * 8,
+          walkTop + 0.25,
+          side * 6.35
+        );
         pot.castShadow = true;
+        pot.receiveShadow = true;
         g.add(pot);
       }
     }
@@ -1835,11 +1864,12 @@ function createDeckSurface(levelIndex, zCenter) {
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
   // Wide terrain under/beside the corridor so chase-cam never sees empty void
+  // Ground well below sidewalk (walk top ≈ 0.12) — no coplanar flicker
   const strips = [
-    { src: maps.gravel, z: -28, depth: 36, color: 0x8a8678, y: -0.05 },
-    { src: maps.dirt, z: 26, depth: 32, color: 0x7a6a55, y: -0.05 },
-    { src: maps.cobble, z: -12, depth: 8, color: 0x9a968c, y: -0.04 }, // plaza toward cam
-    { src: maps.gravel, z: 12, depth: 10, color: 0x8c887c, y: -0.04 },
+    { src: maps.gravel, z: -30, depth: 28, color: 0x8a8678, y: -0.12 },
+    { src: maps.dirt, z: 28, depth: 28, color: 0x7a6a55, y: -0.12 },
+    { src: maps.gravel, z: -14, depth: 10, color: 0x8c887c, y: -0.1 },
+    { src: maps.gravel, z: 14, depth: 10, color: 0x8c887c, y: -0.1 },
   ];
   for (const s of strips) {
     const mat = pbrFrom(s.src, SEGMENT_LEN / 5, s.depth / 4, {
@@ -1850,14 +1880,14 @@ function createGroundStrip(zCenter) {
       normalScale: new THREE.Vector2(1.4, 1.4),
     });
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.12, s.depth),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.14, s.depth),
       mat
     );
     mesh.position.set(0, s.y, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
   }
-  // City plaza pad on camera-near shoulder
+  // Plaza farther from sidewalk (z≈−6.35) to avoid edge z-fight
   const plazaMat = pbrFrom(maps.cobble, 4, 4, {
     color: 0xb0aaa0,
     roughness: 0.9,
@@ -1865,8 +1895,8 @@ function createGroundStrip(zCenter) {
     envMapIntensity: 0.2,
     normalScale: new THREE.Vector2(1.2, 1.2),
   });
-  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 10), plazaMat);
-  plaza.position.set(-SEGMENT_LEN / 4, -0.02, -16);
+  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 8), plazaMat);
+  plaza.position.set(-SEGMENT_LEN / 4, -0.08, -18);
   plaza.receiveShadow = true;
   g.add(plaza);
 
@@ -2410,7 +2440,8 @@ function updatePlayer(dt) {
 
   state.wheelSpin += (state.speed / 0.36) * dt;
   for (const w of ud.wheels) {
-    w.spinner.rotation.x = -state.wheelSpin;
+    // Positive X rotation = top of wheel moves toward −X / rear when car faces +X
+    w.spinner.rotation.x = state.wheelSpin;
     w.hub.position.y = w.baseY + state.suspension * 0.35;
   }
 
@@ -2737,46 +2768,22 @@ function anyThrustVisible() {
 }
 
 
-/** Fade decks between camera and car — critical when inverted under a slab. */
+/**
+ * Keep road decks / curbs / soffits fully opaque.
+ * (Earlier cutaway faded them glassy so the chase cam could see the car —
+ * that looked like transparent roads. Visibility is handled by camera framing
+ * + building cutaway only.)
+ */
 function updateDeckCutaway() {
-  const carX = roadster.position.x;
-  const carY = state.y;
-  const carLevel = state.level;
-  const camY = camera.position.y;
   for (const seg of segments) {
-    const li = seg.userData.levelIndex;
-    if (li === undefined) continue;
     const mats = seg.userData.cutawayMats;
     if (!mats) continue;
-    if (seg.userData.hasGap) continue;
-
-    const dx = Math.abs(seg.position.x - carX);
-    const near = dx < SEGMENT_LEN * 1.35;
-    let opacity = 1;
-    if (near) {
-      if (li === carLevel) opacity = state.inverted ? 0.45 : 0.88;
-      else if (Math.abs(li - carLevel) === 1) opacity = 0.4;
-      else opacity = 0.18;
-
-      // Deck that the inverted car hangs from (level above) — cut away hard
-      if (state.inverted && li === carLevel + 1) opacity = Math.min(opacity, 0.12);
-      // Top-level canopy when hanging under roof
-      if (state.inverted && carLevel === 2 && li === 2) opacity = Math.min(opacity, 0.14);
-
-      // Any deck whose Y slab sits between camera and car
-      const deckY = floorY(li);
-      const betweenY =
-        (deckY - camY) * (deckY - carY) < 0 ||
-        (Math.min(camY, carY) < deckY && deckY < Math.max(camY, carY));
-      if (betweenY) opacity = Math.min(opacity, state.inverted ? 0.1 : 0.28);
-
-      if (li > carLevel && !state.inverted) opacity = Math.min(opacity, 0.22);
-      if (li < carLevel && state.inverted) opacity = Math.min(opacity, 0.2);
-    }
     for (const m of mats) {
-      m.transparent = opacity < 0.99;
-      m.opacity = opacity;
-      m.depthWrite = opacity > 0.55;
+      // Never leave glass leftover from a prior fade
+      if (m.userData?.forceGlass) continue;
+      m.transparent = false;
+      m.opacity = 1;
+      m.depthWrite = true;
     }
   }
 }
@@ -2880,8 +2887,9 @@ function updatePlayHint(dt) {
 }
 
 function updateHUD() {
+  // Time once (left). Best is the saved record only — never mirrors live time.
   if (hudTime) hudTime.textContent = state.time.toFixed(1) + "s";
-  if (hudBest) hudBest.textContent = Math.max(bestTime, state.time).toFixed(1) + "s";
+  if (hudBest) hudBest.textContent = "Best " + bestTime.toFixed(1) + "s";
   flipBtn?.classList.toggle("active", state.inverted || state.flipping);
 }
 
@@ -2965,7 +2973,7 @@ function startGame() {
       showPlayHint(
         touch
           ? "Tap Flip to drive on the ceiling. Gaps? Flip or hop levels."
-          : "Shift / Flip: stick to the ceiling. Cross gaps upside down or hop levels.",
+          : "Space / Flip: stick to the ceiling. Cross gaps upside down or hop levels.",
         4.5
       );
     }
@@ -2982,17 +2990,18 @@ function startGame() {
 
 /* ── Input ────────────────────────────────────────────────── */
 window.addEventListener("keydown", (e) => {
-  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+  // Space = flip (not hop). ArrowUp / W = hop up.
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (state.running) input.flip = true;
+  }
+  if (e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
     if (state.running) input.up = true;
   }
   if (e.code === "ArrowDown" || e.code === "KeyS") {
     e.preventDefault();
     if (state.running) input.down = true;
-  }
-  if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
-    e.preventDefault();
-    if (state.running) input.flip = true;
   }
 });
 

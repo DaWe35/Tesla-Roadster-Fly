@@ -22,9 +22,9 @@ Open `http://localhost:8080` → **START RUN**.
 
 | Control | Action |
 |--------|--------|
-| `↑` / `Space` / `W` / swipe up | Move one level up |
+| `↑` / `W` / swipe up | Move one level up |
 | `↓` / `S` / swipe down | Move one level down |
-| `Shift` / **Flip** | Flip to the ceiling or back to the floor |
+| `Space` / **Flip** | Flip to the ceiling or back to the floor |
 
 **Gaps** open on some roads, but never on all three levels at once — there is always a passable route. Cross a gap by **flipping** onto the underside of the road above, or **hop** to a level that still has pavement.
 
@@ -64,8 +64,8 @@ python3 -m http.server 8080
 
 | Irányítás | Hatás |
 |-----------|--------|
-| `↑` / `Space` / swipe fel | Egy szinttel feljebb |
+| `↑` / `W` / swipe fel | Egy szinttel feljebb |
 | `↓` / `S` / swipe le | Egy szinttel lejjebb |
-| `Shift` / **Flip** | Plafonra fordulás vagy vissza a padlóra |
+| `Space` / **Flip** | Plafonra fordulás vagy vissza a padlóra |
 
 A szakadékok **soha nem nyílnak meg mindhárom szinten egyszerre**. Átkelés: **Flip** a felső út aljára, vagy szintváltás.

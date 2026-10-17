@@ -6,6 +6,7 @@
 - **Source:** [Tesla Roadster 2020 on Sketchfab](https://sketchfab.com/3d-models/tesla-roadster-2020-1fbf29e297bd4a17ac39a00a378441d8)
 - **License:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - **Notes:** Draco + WebP compressed for web (`assets/models/tesla-roadster-2020.glb`). Attribution required.
+- **2026 redesign:** No properly licensed GLB of the Oct 15, 2026 McGregor production redesign was found (Sketchfab “2026” uploads are older speculative concepts; other downloads lack clear redistribution rights). Materials are restyled toward the press look (satin silver/white + dark lower cladding) on this 2020 mesh.
 
 ## Environment & materials (CC0)
 

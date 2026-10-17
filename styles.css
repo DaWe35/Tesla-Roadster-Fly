@@ -60,6 +60,7 @@ body {
 .hud-top {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 0.75rem;
   padding: 0.9rem 1.1rem;
 }
@@ -74,6 +75,18 @@ body {
   font-weight: 700;
   font-size: 1.05rem;
   color: var(--sun);
+}
+
+/* Live time is the primary readout; best is quieter so it isn't a second timer */
+#hud-time {
+  font-size: 1.15rem;
+}
+
+#hud-best {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  opacity: 0.9;
 }
 
 .hud-bottom {
