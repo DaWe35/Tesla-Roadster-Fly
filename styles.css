@@ -249,6 +249,62 @@ kbd {
   transform: translateY(1px);
 }
 
+.cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
+  transform: none;
+  box-shadow: none;
+}
+
+/* —— Loading —— */
+#loading-screen {
+  z-index: 12;
+  background:
+    linear-gradient(160deg, rgba(6, 14, 28, 0.72) 0%, rgba(8, 22, 48, 0.82) 100%),
+    radial-gradient(ellipse at 60% 20%, rgba(62, 197, 255, 0.22), transparent 55%),
+    radial-gradient(ellipse at 25% 85%, rgba(225, 29, 46, 0.14), transparent 45%);
+}
+
+.loading-panel {
+  text-align: center;
+}
+
+.loading-panel h1 {
+  background: linear-gradient(92deg, #fff 20%, var(--sky-glow) 70%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.loading-bar {
+  margin-top: 0.35rem;
+  height: 0.35rem;
+  width: 100%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.loading-bar-fill {
+  height: 100%;
+  width: 8%;
+  background: linear-gradient(90deg, var(--sky-glow), var(--sun), var(--accent-hot));
+  transition: width 0.35s ease;
+  box-shadow: 0 0 16px rgba(62, 197, 255, 0.45);
+  animation: loadPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes loadPulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.2);
+  }
+}
+
 .best-line {
   margin-top: 0.9rem;
   text-align: center;

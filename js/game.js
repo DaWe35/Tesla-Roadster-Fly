@@ -1,8 +1,16 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 /* ─────────────────────────────────────────────────────────────
    Roadster Rise — vertical-level 3D runner
    Core: snappy hop between stacked decks + flip to ceiling
+   Visuals: GLTF Roadster, HDRI sky, PBR corridor materials
    ───────────────────────────────────────────────────────────── */
 
 const STORAGE_KEY = "roadster-rise-best";
@@ -13,7 +21,8 @@ const LEVELS = [
 ];
 const LEVEL_GAP = 5.2;
 const DECK_THICK = 0.55;
-const CAR_CLEARANCE = 0.92; // distance from surface to car origin when stuck
+/** Updated after GLTF load from model height (~1.0–1.1). */
+let CAR_CLEARANCE = 1.05;
 const HOP_DURATION = 0.12; // near-instant level change
 const FLIP_DURATION = 0.22;
 const REACTION_TIME = 0.45; // human reaction budget before a gap
@@ -46,6 +55,9 @@ const startBest = document.getElementById("start-best");
 const finalTime = document.getElementById("final-time");
 const finalBest = document.getElementById("final-best");
 const gameoverReason = document.getElementById("gameover-reason");
+const loadingScreen = document.getElementById("loading-screen");
+const loadingText = document.getElementById("loading-text");
+const loadingBarFill = document.getElementById("loading-bar-fill");
 
 let bestTime = 0;
 try {
@@ -60,7 +72,6 @@ if (!canvas || !startBtn) {
   throw new Error("Missing required DOM (#game-canvas / #start-btn). Check index.html.");
 }
 
-/* ── Renderer / Scene ─────────────────────────────────────── */
 /* ── Quality tier (mobile-friendly defaults) ──────────────── */
 const isMobile =
   matchMedia("(pointer: coarse)").matches ||
@@ -86,12 +97,12 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
-const FOG_COLOR = 0xb9d7ef;
+const FOG_COLOR = 0xb8c9d8;
 scene.background = new THREE.Color(FOG_COLOR);
-scene.fog = new THREE.Fog(FOG_COLOR, 55, 210);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.011);
 
 const camera = new THREE.PerspectiveCamera(
   55,
@@ -102,86 +113,107 @@ const camera = new THREE.PerspectiveCamera(
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 6, -10);
 
-/* ── Procedural canvas textures (no external assets) ──────── */
-function canvasTex(draw, size = 256, repeatX = 1, repeatY = 1) {
-  const c = document.createElement("canvas");
-  c.width = c.height = size;
-  const ctx = c.getContext("2d");
-  draw(ctx, size);
-  const tex = new THREE.CanvasTexture(c);
+/* ── Loading UI ───────────────────────────────────────────── */
+let assetsReady = false;
+let readyResolve = null;
+const readyPromise = new Promise((r) => {
+  readyResolve = r;
+});
+
+function setLoading(progress, message) {
+  if (loadingText && message) loadingText.textContent = message;
+  if (loadingBarFill) {
+    loadingBarFill.style.width = `${Math.round(Math.min(1, Math.max(0, progress)) * 100)}%`;
+  }
+}
+
+function finishLoadingUI() {
+  loadingScreen?.classList.add("hidden");
+  loadingScreen?.setAttribute("aria-busy", "false");
+  startScreen?.classList.remove("hidden");
+  if (startBtn) {
+    startBtn.disabled = false;
+  }
+}
+
+/* ── Texture helpers ──────────────────────────────────────── */
+const textureLoader = new THREE.TextureLoader();
+const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 1);
+
+function prepColorMap(tex, repeatX = 1, repeatY = 1) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-  tex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy?.() || 1);
+  tex.anisotropy = maxAniso;
   return tex;
 }
 
-const texAsphalt = canvasTex((ctx, s) => {
-  ctx.fillStyle = "#2e333c";
-  ctx.fillRect(0, 0, s, s);
-  for (let i = 0; i < 2800; i++) {
-    const n = 20 + ((Math.random() * 40) | 0);
-    ctx.fillStyle = `rgb(${n},${n + 2},${n + 6})`;
-    ctx.fillRect((Math.random() * s) | 0, (Math.random() * s) | 0, 1 + (Math.random() * 2) | 0, 1);
-  }
-  // Subtle tar streaks
-  ctx.globalAlpha = 0.12;
-  for (let i = 0; i < 40; i++) {
-    ctx.strokeStyle = "#1a1d22";
-    ctx.beginPath();
-    ctx.moveTo(Math.random() * s, Math.random() * s);
-    ctx.lineTo(Math.random() * s, Math.random() * s);
-    ctx.stroke();
-  }
-}, 256, 6, 2);
+function prepDataMap(tex, repeatX = 1, repeatY = 1) {
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX, repeatY);
+  tex.anisotropy = maxAniso;
+  return tex;
+}
 
-const texAsphaltRough = canvasTex((ctx, s) => {
-  ctx.fillStyle = "#c8c8c8";
-  ctx.fillRect(0, 0, s, s);
-  for (let i = 0; i < 2000; i++) {
-    const v = (140 + Math.random() * 90) | 0;
-    ctx.fillStyle = `rgb(${v},${v},${v})`;
-    ctx.fillRect((Math.random() * s) | 0, (Math.random() * s) | 0, 2, 2);
-  }
-}, 128, 6, 2);
-texAsphaltRough.colorSpace = THREE.NoColorSpace;
+function loadTexture(url, prep = prepColorMap) {
+  return new Promise((resolve, reject) => {
+    textureLoader.load(
+      url,
+      (tex) => resolve(prep(tex)),
+      undefined,
+      (err) => reject(err || new Error("Failed " + url))
+    );
+  });
+}
 
-const texFacade = canvasTex((ctx, s) => {
-  ctx.fillStyle = "#6a7380";
-  ctx.fillRect(0, 0, s, s);
-  const cols = 6;
-  const rows = 10;
-  const mw = s / cols;
-  const mh = s / rows;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const lit = Math.random() > 0.35;
-      ctx.fillStyle = lit ? `hsl(200,${40 + Math.random() * 30}%,${55 + Math.random() * 25}%)` : "#1a222c";
-      const pad = 3;
-      ctx.fillRect(c * mw + pad, r * mh + pad, mw - pad * 2, mh - pad * 2);
-      if (lit && Math.random() > 0.6) {
-        ctx.fillStyle = "rgba(255,240,200,0.35)";
-        ctx.fillRect(c * mw + pad, r * mh + pad, mw - pad * 2, (mh - pad * 2) * 0.35);
-      }
-    }
-  }
-}, 256, 2, 3);
+function cloneMap(src, repeatX, repeatY) {
+  if (!src) return null;
+  const t = src.clone();
+  t.needsUpdate = true;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeatX, repeatY);
+  t.anisotropy = maxAniso;
+  return t;
+}
 
-const texPaintNoise = canvasTex((ctx, s) => {
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, s, s);
-  for (let i = 0; i < 800; i++) {
-    const v = (235 + Math.random() * 20) | 0;
-    ctx.fillStyle = `rgb(${v},${v},${v})`;
-    ctx.fillRect((Math.random() * s) | 0, (Math.random() * s) | 0, 1, 1);
-  }
-}, 64, 4, 4);
+/** Shared PBR sets (filled in boot). */
+const maps = {
+  asphalt: { diff: null, nor: null, rough: null, ao: null },
+  concrete: { diff: null, nor: null, rough: null },
+  brick: { diff: null, nor: null, rough: null },
+  facade: { diff: null, nor: null, rough: null },
+  softParticle: null,
+};
+
+async function loadWorldTextures() {
+  const jobs = [
+    loadTexture("assets/textures/asphalt/diff.jpg").then((t) => (maps.asphalt.diff = t)),
+    loadTexture("assets/textures/asphalt/nor.jpg", prepDataMap).then((t) => (maps.asphalt.nor = t)),
+    loadTexture("assets/textures/asphalt/rough.jpg", prepDataMap).then((t) => (maps.asphalt.rough = t)),
+    loadTexture("assets/textures/asphalt/ao.jpg", prepDataMap).then((t) => (maps.asphalt.ao = t)),
+    loadTexture("assets/textures/concrete/diff.jpg").then((t) => (maps.concrete.diff = t)),
+    loadTexture("assets/textures/concrete/nor.jpg", prepDataMap).then((t) => (maps.concrete.nor = t)),
+    loadTexture("assets/textures/concrete/rough.jpg", prepDataMap).then((t) => (maps.concrete.rough = t)),
+    loadTexture("assets/textures/brick/diff.jpg").then((t) => (maps.brick.diff = t)),
+    loadTexture("assets/textures/brick/nor.jpg", prepDataMap).then((t) => (maps.brick.nor = t)),
+    loadTexture("assets/textures/brick/rough.jpg", prepDataMap).then((t) => (maps.brick.rough = t)),
+    loadTexture("assets/textures/facade/diff.jpg").then((t) => (maps.facade.diff = t)),
+    loadTexture("assets/textures/facade/nor.jpg", prepDataMap).then((t) => (maps.facade.nor = t)),
+    loadTexture("assets/textures/facade/rough.jpg", prepDataMap).then((t) => (maps.facade.rough = t)),
+    loadTexture("assets/textures/effects/soft-particle.png").then((t) => {
+      t.colorSpace = THREE.SRGBColorSpace;
+      maps.softParticle = t;
+    }),
+  ];
+  await Promise.all(jobs);
+}
 
 /* ── Lights ───────────────────────────────────────────────── */
-const hemi = new THREE.HemisphereLight(0xd7ecff, 0x5a6358, 0.85);
+const hemi = new THREE.HemisphereLight(0xd7ecff, 0x5a6358, 0.55);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xfff1d6, 2.05);
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.35);
 sun.position.set(-28, 48, 18);
 sun.castShadow = true;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -193,18 +225,21 @@ sun.shadow.camera.top = 36;
 sun.shadow.camera.bottom = -36;
 sun.shadow.bias = -0.00035;
 sun.shadow.normalBias = 0.03;
+sun.shadow.radius = SHADOW_SOFT ? 2.5 : 0;
 scene.add(sun);
+scene.add(sun.target);
 
-const fill = new THREE.DirectionalLight(0xa8cfff, 0.45);
+const fill = new THREE.DirectionalLight(0xa8cfff, 0.35);
 fill.position.set(22, 18, -12);
 scene.add(fill);
 
-const rimLight = new THREE.DirectionalLight(0xffd9a8, 0.35);
+const rimLight = new THREE.DirectionalLight(0xffd9a8, 0.28);
 rimLight.position.set(-12, 10, 18);
 scene.add(rimLight);
 
-/* ── Sky dome + env map for reflections ───────────────────── */
-function makeSky() {
+/* ── Sky dome fallback + HDRI environment ─────────────────── */
+let skyDome = null;
+function makeSkyFallback() {
   const geo = new THREE.SphereGeometry(220, QUALITY === "low" ? 24 : 40, QUALITY === "low" ? 16 : 24);
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -240,126 +275,104 @@ function makeSky() {
         float sun = pow(max(0.0, dot(n, sunDir)), 64.0);
         float halo = pow(max(0.0, dot(n, sunDir)), 8.0);
         col += sunColor * (sun * 1.6 + halo * 0.25);
-        // Soft horizon haze
         col = mix(col, vec3(0.85, 0.9, 0.95), 1.0 - smoothstep(0.0, 0.15, abs(h)));
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
-  const sky = new THREE.Mesh(geo, mat);
-  scene.add(sky);
-  return sky;
+  skyDome = new THREE.Mesh(geo, mat);
+  scene.add(skyDome);
+  return skyDome;
 }
-makeSky();
 
-function makeEnvMap() {
+async function loadEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
-  const c = document.createElement("canvas");
-  c.width = 512;
-  c.height = 256;
-  const ctx = c.getContext("2d");
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, "#0b3d78");
-  g.addColorStop(0.45, "#7ebfe8");
-  g.addColorStop(0.55, "#dceef8");
-  g.addColorStop(1, "#8a9288");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 512, 256);
-  // Soft sun disc
-  const sx = 160;
-  const sy = 70;
-  const rg = ctx.createRadialGradient(sx, sy, 2, sx, sy, 80);
-  rg.addColorStop(0, "rgba(255,245,210,1)");
-  rg.addColorStop(0.2, "rgba(255,230,160,0.7)");
-  rg.addColorStop(1, "rgba(255,230,160,0)");
-  ctx.fillStyle = rg;
-  ctx.fillRect(0, 0, 512, 256);
-  const equirect = new THREE.CanvasTexture(c);
-  equirect.colorSpace = THREE.SRGBColorSpace;
-  equirect.mapping = THREE.EquirectangularReflectionMapping;
-  const envRT = pmrem.fromEquirectangular(equirect);
-  equirect.dispose();
-  pmrem.dispose();
-  return envRT.texture;
+  try {
+    const hdr = await new Promise((resolve, reject) => {
+      new RGBELoader().load(
+        "assets/hdri/sky_1k.hdr",
+        resolve,
+        undefined,
+        reject
+      );
+    });
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    const envRT = pmrem.fromEquirectangular(hdr);
+    scene.environment = envRT.texture;
+    scene.background = envRT.texture;
+    scene.backgroundBlurriness = 0.02;
+    scene.backgroundIntensity = 1.0;
+    scene.fog = new THREE.FogExp2(0xb7c6d4, QUALITY === "low" ? 0.014 : 0.0105);
+    hdr.dispose();
+    pmrem.dispose();
+    if (skyDome) {
+      scene.remove(skyDome);
+      skyDome.geometry.dispose();
+      skyDome.material.dispose();
+      skyDome = null;
+    }
+  } catch (err) {
+    console.warn("HDRI load failed, using procedural sky", err);
+    pmrem.dispose();
+    makeSkyFallback();
+    // Soft canvas env for reflections
+    const c = document.createElement("canvas");
+    c.width = 512;
+    c.height = 256;
+    const ctx = c.getContext("2d");
+    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, "#0b3d78");
+    g.addColorStop(0.45, "#7ebfe8");
+    g.addColorStop(0.55, "#dceef8");
+    g.addColorStop(1, "#8a9288");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 512, 256);
+    const equirect = new THREE.CanvasTexture(c);
+    equirect.colorSpace = THREE.SRGBColorSpace;
+    equirect.mapping = THREE.EquirectangularReflectionMapping;
+    const pmrem2 = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem2.fromEquirectangular(equirect).texture;
+    equirect.dispose();
+    pmrem2.dispose();
+  }
 }
-const envMap = makeEnvMap();
-scene.environment = envMap;
 
-/* ── Materials ────────────────────────────────────────────── */
-const matWhite =
-  QUALITY === "high"
-    ? new THREE.MeshPhysicalMaterial({
-        color: 0xf4f6f8,
-        metalness: 0.55,
-        roughness: 0.22,
-        clearcoat: 0.85,
-        clearcoatRoughness: 0.12,
-        envMapIntensity: 1.35,
-        map: texPaintNoise,
-      })
-    : new THREE.MeshStandardMaterial({
-        color: 0xf4f6f8,
-        metalness: 0.5,
-        roughness: 0.28,
-        envMapIntensity: 1.15,
-        map: texPaintNoise,
-      });
-const matGlass = new THREE.MeshPhysicalMaterial({
-  color: 0x1a2838,
-  metalness: 0.05,
-  roughness: 0.08,
-  transmission: QUALITY === "high" ? 0.35 : 0,
-  thickness: 0.4,
-  transparent: true,
-  opacity: QUALITY === "high" ? 0.85 : 0.7,
-  envMapIntensity: 1.4,
-});
-const matBlack = new THREE.MeshStandardMaterial({
-  color: 0x15151a,
-  metalness: 0.75,
-  roughness: 0.35,
-  envMapIntensity: 0.9,
-});
-const matRed = new THREE.MeshStandardMaterial({
-  color: 0xe01128,
-  metalness: 0.45,
-  roughness: 0.3,
-  emissive: 0x4a0008,
-  emissiveIntensity: 0.55,
-  envMapIntensity: 0.8,
-});
-const matLight = new THREE.MeshStandardMaterial({
-  color: 0xfff6e8,
-  emissive: 0xffe2a8,
-  emissiveIntensity: 1.6,
-  metalness: 0.15,
-  roughness: 0.25,
-});
-const matTire = new THREE.MeshStandardMaterial({
-  color: 0x0c0c10,
-  roughness: 0.92,
-  metalness: 0.05,
-});
-const matRim = new THREE.MeshStandardMaterial({
-  color: 0xd0d4dc,
-  metalness: 0.92,
-  roughness: 0.18,
-  envMapIntensity: 1.2,
-});
-const matAsphalt = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  map: texAsphalt,
-  roughnessMap: texAsphaltRough,
-  roughness: 0.95,
-  metalness: 0.04,
-  envMapIntensity: 0.25,
-});
+/* ── Post-processing (high quality only) ──────────────────── */
+let composer = null;
+let bloomPass = null;
+
+function setupComposer() {
+  if (QUALITY !== "high") {
+    composer = null;
+    bloomPass = null;
+    return;
+  }
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.32,
+    0.45,
+    0.88
+  );
+  composer.addPass(bloomPass);
+  composer.addPass(new OutputPass());
+}
+
+setupComposer();
+
+/* ── Shared materials (non-road) ──────────────────────────── */
 const matLine = new THREE.MeshStandardMaterial({
   color: 0xfff0a0,
   emissive: 0x554410,
   emissiveIntensity: 0.2,
   roughness: 0.65,
+  metalness: 0.05,
+});
+const matTire = new THREE.MeshStandardMaterial({
+  color: 0x0c0c10,
+  roughness: 0.92,
   metalness: 0.05,
 });
 const matRail = new THREE.MeshStandardMaterial({
@@ -369,268 +382,76 @@ const matRail = new THREE.MeshStandardMaterial({
   envMapIntensity: 0.9,
 });
 
-/* ── Roadster (procedural, axis: +X forward) ──────────────── */
-function createRoadster() {
-  const root = new THREE.Group();
-  root.name = "roadster";
-  const body = new THREE.Group();
-  root.add(body);
+const BUILDING_PALETTE = [
+  0xc4b4a4, 0xb8a090, 0x9aa4ae, 0xa89888, 0x8e9aaa,
+  0xd0c4b0, 0x7d8b97, 0xb0a498, 0x96a0a8, 0xc8b8a8,
+  0x8a929c, 0xbca890, 0x9cacb4, 0xa89080, 0xbec4c8,
+];
 
-  const add = (mesh, parent = body) => {
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    parent.add(mesh);
-    return mesh;
-  };
-
-  // Main low body (tapered via scaled boxes)
-  add(new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.38, 1.65), matWhite)).position.set(0.05, 0.38, 0);
-  // White undertray so chase-cam never shows a black belly
-  add(new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.08, 1.5), matWhite)).position.set(0.05, 0.14, 0);
-
-  // Sculpted upper shell
-  const shell = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.28, 1.5), matWhite);
-  shell.position.set(0.1, 0.62, 0);
-  add(shell);
-
-  // Nose wedge
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.28, 1.45), matWhite);
-  nose.position.set(1.85, 0.36, 0);
-  nose.scale.set(1, 0.85, 0.95);
-  add(nose);
-
-  const noseTip = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.2, 1.25), matWhite);
-  noseTip.position.set(2.45, 0.3, 0);
-  add(noseTip);
-
-  // Side pods / hips (Roadster haunches)
-  for (const side of [-1, 1]) {
-    const hip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.32, 0.28), matWhite);
-    hip.position.set(-0.2, 0.42, side * 0.88);
-    add(hip);
-    const fender = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.28, 0.22), matWhite);
-    fender.position.set(1.2, 0.4, side * 0.86);
-    add(fender);
-  }
-
-  // Cabin / glass canopy
-  const canopy = new THREE.Mesh(
-    new THREE.SphereGeometry(0.9, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.5),
-    matGlass
-  );
-  canopy.scale.set(1.35, 0.62, 0.88);
-  canopy.position.set(-0.2, 0.72, 0);
-  add(canopy);
-
-  // Dark canopy surround
-  const surround = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.35), matBlack);
-  surround.position.set(-0.15, 0.78, 0);
-  add(surround);
-
-  // Front splitter + headlights (glass lens + emissive core)
-  add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.06, 1.55), matBlack)).position.set(2.55, 0.16, 0);
-  const matLens = new THREE.MeshPhysicalMaterial({
-    color: 0xe8f4ff,
-    metalness: 0.05,
-    roughness: 0.05,
-    transmission: QUALITY === "high" ? 0.55 : 0,
-    transparent: true,
-    opacity: QUALITY === "high" ? 0.75 : 0.55,
-    envMapIntensity: 1.5,
-  });
-  for (const side of [-1, 1]) {
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, 0.38), matBlack);
-    housing.position.set(2.48, 0.4, side * 0.52);
-    add(housing);
-    const hl = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.28, 4, 8), matLight);
-    hl.rotation.z = Math.PI / 2;
-    hl.position.set(2.55, 0.4, side * 0.52);
-    add(hl);
-    const lens = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.34), matLens);
-    lens.position.set(2.62, 0.4, side * 0.52);
-    add(lens);
-    if (QUALITY === "high") {
-      const glow = new THREE.PointLight(0xfff0c8, 0.55, 5);
-      glow.position.copy(hl.position);
-      body.add(glow);
-    }
-  }
-
-  // Windshield / A-pillar glass strip
-  const windshield = new THREE.Mesh(
-    new THREE.BoxGeometry(0.85, 0.02, 1.2),
-    matGlass
-  );
-  windshield.position.set(0.55, 0.92, 0);
-  windshield.rotation.z = -0.35;
-  add(windshield);
-
-  // Rear deck (white — readable from chase cam) + wing
-  add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.28, 1.5), matWhite)).position.set(-1.65, 0.58, 0);
-  add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 1.55), matWhite)).position.set(-2.15, 0.42, 0);
-  const wing = new THREE.Group();
-  const wingPlate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 1.75), matBlack);
-  wingPlate.position.set(0, 0.5, 0);
-  wing.add(wingPlate);
-  for (const side of [-1, 1]) {
-    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.4, 0.07), matBlack);
-    strut.position.set(0.08, 0.28, side * 0.58);
-    wing.add(strut);
-    // white endplates
-    const ep = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.22, 0.06), matWhite);
-    ep.position.set(0, 0.52, side * 0.9);
-    wing.add(ep);
-  }
-  wing.position.set(-2.0, 0.42, 0);
-  body.add(wing);
-
-  // Taillight bar
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 1.45), matRed);
-  tail.position.set(-2.48, 0.5, 0);
-  add(tail);
-
-  // Thruster bay + nozzles
-  add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.28, 1.15), matBlack)).position.set(-2.4, 0.22, 0);
+/* ── Roadster: placeholder + async GLTF ───────────────────── */
+function createEmptyThrusterData(body) {
   const nozzles = [];
   const jetLights = [];
   const nozzleMat = new THREE.MeshStandardMaterial({
-    color: 0x3a4550,
-    metalness: 0.95,
-    roughness: 0.2,
+    color: 0x4a5560,
+    metalness: 0.9,
+    roughness: 0.25,
   });
+  // Body-local offsets under rear belly (forward = +X). Parent to body → works inverted.
+  const offsets = [
+    [-1.9, 0.14, -0.34],
+    [-1.9, 0.14, 0.34],
+    [-2.12, 0.2, -0.16],
+    [-2.12, 0.2, 0.16],
+  ];
   for (let i = 0; i < 4; i++) {
-    const nz = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 0.28, 12), nozzleMat);
+    const nz = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.18, 10), nozzleMat);
     nz.rotation.z = Math.PI / 2;
-    const sz = i < 2 ? -0.28 : 0.28;
-    const sy = i % 2 === 0 ? 0.18 : 0.32;
-    nz.position.set(-2.65, sy, sz);
+    nz.position.fromArray(offsets[i]);
     body.add(nz);
     nozzles.push(nz);
-    const jet = new THREE.PointLight(0x66e0ff, 0, 5);
-    jet.position.set(-2.9, sy, sz);
+    const jet = new THREE.PointLight(0xdbeafe, 0, 4);
+    jet.position.set(offsets[i][0] - 0.15, offsets[i][1], offsets[i][2]);
     body.add(jet);
     jetLights.push(jet);
   }
 
-  // Side skirts
-  for (const side of [-1, 1]) {
-    add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.1, 0.1), matBlack)).position.set(0.05, 0.18, side * 0.92);
-  }
-
-  // Tesla-ish front badge plate
-  const badge = new THREE.Mesh(
-    new THREE.CircleGeometry(0.12, 16),
-    new THREE.MeshStandardMaterial({ color: 0xe11d2e, metalness: 0.6, roughness: 0.3 })
-  );
-  badge.position.set(2.72, 0.38, 0);
-  badge.rotation.y = Math.PI / 2;
-  body.add(badge);
-
-  // Wheels — axle along local X; spinner rotates around X only.
-  // Parented to body so ceiling flip carries them correctly.
-  const wheels = [];
-  const wheelPositions = [
-    [1.35, 0.34, 0.88],
-    [1.35, 0.34, -0.88],
-    [-1.4, 0.34, 0.88],
-    [-1.4, 0.34, -0.88],
-  ];
-  for (const [x, y, z] of wheelPositions) {
-    const hub = new THREE.Group();
-    hub.position.set(x, y, z);
-    // Face axle along world ±Z (car forward is +X)
-    hub.rotation.y = Math.PI / 2;
-
-    const spinner = new THREE.Group();
-    hub.add(spinner);
-
-    // Tire + sidewall bulge + tread ring
-    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.32, 22), matTire);
-    tire.rotation.z = Math.PI / 2;
-    tire.castShadow = true;
-    spinner.add(tire);
-    const sidewall = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.37, 0.37, 0.08, 22),
-      new THREE.MeshStandardMaterial({ color: 0x1a1a22, roughness: 0.95, metalness: 0.02 })
-    );
-    sidewall.rotation.z = Math.PI / 2;
-    spinner.add(sidewall);
-    const tread = new THREE.Mesh(
-      new THREE.TorusGeometry(0.355, 0.035, 6, 24),
-      new THREE.MeshStandardMaterial({ color: 0x08080c, roughness: 0.98, metalness: 0 })
-    );
-    tread.rotation.y = Math.PI / 2;
-    spinner.add(tread);
-
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.34, 18), matRim);
-    rim.rotation.z = Math.PI / 2;
-    spinner.add(rim);
-    const hubCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.1, 0.1, 0.36, 12),
-      new THREE.MeshStandardMaterial({
-        color: 0x22252c,
-        metalness: 0.85,
-        roughness: 0.25,
-        envMapIntensity: 1.1,
-      })
-    );
-    hubCap.rotation.z = Math.PI / 2;
-    spinner.add(hubCap);
-
-    for (let s = 0; s < 6; s++) {
-      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.05, 0.05), matRim);
-      spoke.rotation.x = (s / 6) * Math.PI * 2;
-      spinner.add(spoke);
-    }
-
-    body.add(hub);
-    wheels.push({ hub, spinner, baseY: y });
-  }
-
-  // Cold-gas thrusters — compact jets from nozzles along body −Y (belly).
-  // depthTest ON so they don't paint through the car/road; soft additive look.
-  const mkThrustMat = (color, opacity = 0) =>
-    new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity,
-      depthTest: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-    });
   const plumes = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
-    const sz = i < 2 ? -0.28 : 0.28;
-    const sy = i % 2 === 0 ? 0.18 : 0.32;
-    // Sit just outside the nozzle lip
-    group.position.set(-2.78, sy, sz);
-
-    // Cone tip along −Y (belly). Base near nozzle, tip away.
-    const core = new THREE.Mesh(
-      new THREE.ConeGeometry(0.09, 0.85, 8, 1, true),
-      mkThrustMat(0xe0f7ff, 0)
-    );
-    core.rotation.x = Math.PI;
-    core.position.y = -0.42;
-    group.add(core);
-
-    const glow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.16, 1.15, 8, 1, true),
-      mkThrustMat(0x38bdf8, 0)
-    );
-    glow.rotation.x = Math.PI;
-    glow.position.y = -0.5;
-    group.add(glow);
-
+    group.position.copy(nozzles[i].position);
+    group.position.x -= 0.12;
     group.visible = false;
     body.add(group);
-    plumes.push({ group, core, glow });
+    plumes.push({ group, core: group, glow: group });
   }
 
-  // Short-lived spark particles in true world space (scene-parented below)
-  const jetCount = 36;
+  // Soft vapor sprite pool (world-space)
+  const vaporCount = QUALITY === "low" ? 40 : 56;
+  const vaporSprites = [];
+  const vaporLife = new Float32Array(vaporCount);
+  const vaporVel = new Float32Array(vaporCount * 3);
+  const vaporMatBase = {
+    map: null,
+    color: 0xe8eef4,
+    transparent: true,
+    opacity: 0,
+    depthTest: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+  };
+  for (let i = 0; i < vaporCount; i++) {
+    const mat = new THREE.SpriteMaterial({ ...vaporMatBase });
+    const spr = new THREE.Sprite(mat);
+    spr.visible = false;
+    spr.scale.set(0.2, 0.2, 0.2);
+    scene.add(spr);
+    vaporSprites.push(spr);
+    vaporLife[i] = 0;
+  }
+
+  // Optional subtle Points trail
+  const jetCount = 28;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
   const jetVel = new Float32Array(jetCount * 3);
@@ -643,25 +464,19 @@ function createRoadster() {
   const jets = new THREE.Points(
     jetGeo,
     new THREE.PointsMaterial({
-      color: 0xb8f4ff,
-      size: 0.18,
+      color: 0xdce7f0,
+      size: 0.1,
       transparent: true,
       opacity: 0,
       depthTest: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
       sizeAttenuation: true,
     })
   );
   jets.frustumCulled = false;
 
-  const _q = new THREE.Quaternion();
-  const _belly = new THREE.Vector3();
-  const _origin = new THREE.Vector3();
-
-  root.userData = {
-    body,
-    wheels,
+  return {
     nozzles,
     jetLights,
     plumes,
@@ -670,18 +485,259 @@ function createRoadster() {
     jetVel,
     jetLife,
     jetCount,
+    vaporSprites,
+    vaporLife,
+    vaporVel,
+    vaporCount,
     thrustLevel: 0,
     thrustHold: 0,
-    _q,
-    _belly,
-    _origin,
+    _q: new THREE.Quaternion(),
+    _belly: new THREE.Vector3(),
+    _origin: new THREE.Vector3(),
+  };
+}
+
+function createRoadsterPlaceholder() {
+  const root = new THREE.Group();
+  root.name = "roadster";
+  const body = new THREE.Group();
+  root.add(body);
+  const thrust = createEmptyThrusterData(body);
+  root.userData = {
+    body,
+    wheels: [],
+    model: null,
+    ready: false,
+    ...thrust,
   };
   return root;
 }
 
-const roadster = createRoadster();
+function enhanceRoadsterMaterials(root) {
+  root.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+    const list = Array.isArray(child.material) ? child.material : [child.material];
+    const next = list.map((mat) => {
+      if (!mat) return mat;
+      const name = `${mat.name || ""} ${child.name || ""}`.toLowerCase();
+      const color = mat.color ? mat.color.clone() : new THREE.Color(0xffffff);
+      const isGlass =
+        /glass|window|windshield|transpar|canopy|lens/.test(name) ||
+        (mat.transparent && (mat.opacity ?? 1) < 0.95);
+      const isTail = /tail|rear.?light|brake|stop/.test(name) || color.r > 0.55 && color.g < 0.25 && color.b < 0.25;
+      const isHead =
+        /head.?light|lamp|light|led|drl/.test(name) && !isTail;
+      const isPaint =
+        !isGlass &&
+        !isTail &&
+        !isHead &&
+        (/paint|body|carpaint|exterior|chassis|shell|hood|door|fender|bumper/.test(name) ||
+          (mat.metalness ?? 0) < 0.85);
+
+      if (isGlass) {
+        return new THREE.MeshPhysicalMaterial({
+          color: color.getHex() === 0xffffff ? 0x1a2838 : color,
+          metalness: 0.05,
+          roughness: 0.06,
+          transmission: QUALITY === "high" ? 0.72 : 0,
+          thickness: 0.45,
+          transparent: true,
+          opacity: QUALITY === "high" ? 0.55 : 0.72,
+          envMapIntensity: 1.5,
+          side: THREE.DoubleSide,
+        });
+      }
+      if (isHead) {
+        return new THREE.MeshStandardMaterial({
+          color: 0xfff6e8,
+          emissive: 0xffe2a8,
+          emissiveIntensity: QUALITY === "high" ? 2.2 : 1.4,
+          metalness: 0.2,
+          roughness: 0.22,
+          envMapIntensity: 0.6,
+        });
+      }
+      if (isTail) {
+        return new THREE.MeshStandardMaterial({
+          color: 0xe01128,
+          emissive: 0xff1a2e,
+          emissiveIntensity: QUALITY === "high" ? 1.8 : 1.1,
+          metalness: 0.35,
+          roughness: 0.28,
+          envMapIntensity: 0.7,
+        });
+      }
+      if (isPaint || mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
+        const phys = new THREE.MeshPhysicalMaterial({
+          color,
+          map: mat.map || null,
+          normalMap: mat.normalMap || null,
+          roughnessMap: mat.roughnessMap || null,
+          metalnessMap: mat.metalnessMap || null,
+          aoMap: mat.aoMap || null,
+          metalness: Math.min(0.65, Math.max(0.35, mat.metalness ?? 0.45)),
+          roughness: Math.min(0.45, Math.max(0.12, mat.roughness ?? 0.22)),
+          clearcoat: QUALITY === "high" ? 0.9 : 0.45,
+          clearcoatRoughness: 0.12,
+          envMapIntensity: 1.35,
+        });
+        return phys;
+      }
+      return mat;
+    });
+    child.material = Array.isArray(child.material) ? next : next[0];
+  });
+}
+
+function collectWheelNodes(model) {
+  const byKey = new Map();
+  model.traverse((obj) => {
+    if (!obj.name) return;
+    const m = obj.name.match(/Wheel_(Ft|Bk)_(L|R)/i);
+    if (m) {
+      const norm = `Wheel_${/ft/i.test(m[1]) ? "Ft" : "Bk"}_${m[2].toUpperCase()}`;
+      const prev = byKey.get(norm);
+      // Prefer named transform nodes with children over leaf meshes
+      if (!prev || obj.children.length > prev.children.length) byKey.set(norm, obj);
+      return;
+    }
+    for (const tag of ["Wheel_Ft_L", "Wheel_Ft_R", "Wheel_Bk_L", "Wheel_Bk_R"]) {
+      if (obj.name.includes(tag) && !byKey.has(tag)) byKey.set(tag, obj);
+    }
+  });
+  return [...byKey.values()];
+}
+
+function wrapWheels(nodes, body) {
+  const wheels = [];
+  body.updateWorldMatrix(true, true);
+  for (const node of nodes) {
+    const wp = new THREE.Vector3();
+    node.getWorldPosition(wp);
+    const local = body.worldToLocal(wp.clone());
+    const hub = new THREE.Group();
+    hub.position.copy(local);
+    body.add(hub);
+    const spinner = new THREE.Group();
+    hub.add(spinner);
+    spinner.attach(node);
+    wheels.push({ hub, spinner, baseY: hub.position.y });
+  }
+  return wheels;
+}
+
+async function loadRoadsterModel(root) {
+  const body = root.userData.body;
+  const draco = new DRACOLoader();
+  draco.setDecoderPath("vendor/draco/gltf/");
+  const loader = new GLTFLoader();
+  loader.setDRACOLoader(draco);
+
+  const gltf = await new Promise((resolve, reject) => {
+    loader.load(
+      "assets/models/tesla-roadster-2020.glb",
+      resolve,
+      (ev) => {
+        if (ev.total) {
+          setLoading(0.45 + 0.4 * (ev.loaded / ev.total), "Loading Roadster…");
+        }
+      },
+      reject
+    );
+  });
+
+  const model = gltf.scene;
+  model.name = "tesla-roadster-2020";
+
+  // Model forward = +Z → game forward +X
+  model.rotation.y = -Math.PI / 2;
+
+  // Fit length along X to ~4.2 units
+  model.updateMatrixWorld(true);
+  const box0 = new THREE.Box3().setFromObject(model);
+  const size0 = box0.getSize(new THREE.Vector3());
+  // After Y rot, length is along X ≈ original Z extent
+  const length = Math.max(size0.x, size0.z);
+  let scale = 4.25 / length;
+  scale = THREE.MathUtils.clamp(scale, 0.95, 1.05);
+  model.scale.setScalar(scale);
+
+  model.updateMatrixWorld(true);
+  const box1 = new THREE.Box3().setFromObject(model);
+  // Sit wheels on ground (min Y → 0 in body space). Model is not yet under body.
+  model.position.y -= box1.min.y;
+
+  body.add(model);
+  model.updateMatrixWorld(true);
+
+  enhanceRoadsterMaterials(model);
+
+  // Optional headlight point lights
+  if (QUALITY === "high") {
+    for (const side of [-1, 1]) {
+      const glow = new THREE.PointLight(0xfff0c8, 0.4, 6);
+      glow.position.set(2.1, 0.45, side * 0.55);
+      body.add(glow);
+    }
+  }
+
+  let wheels = [];
+  try {
+    const nodes = collectWheelNodes(model);
+    if (nodes.length) {
+      wheels = wrapWheels(nodes, body);
+    }
+  } catch (err) {
+    console.warn("Wheel wrap failed — spin disabled", err);
+    wheels = [];
+  }
+
+  // Bind soft-particle map now that textures are loaded
+  if (maps.softParticle) {
+    for (const spr of root.userData.vaporSprites) {
+      spr.material.map = maps.softParticle;
+      spr.material.needsUpdate = true;
+    }
+  }
+
+  // Refine nozzle placement from model bbox (rear belly)
+  model.updateMatrixWorld(true);
+  const boxBody = new THREE.Box3().setFromObject(model);
+  const nx = boxBody.min.x + 0.2;
+  const ny = boxBody.min.y + 0.12;
+  const zSpan = (boxBody.max.z - boxBody.min.z) * 0.22;
+  const nozzlePos = [
+    [nx, ny, -zSpan],
+    [nx, ny, zSpan],
+    [nx - 0.18, ny + 0.06, -zSpan * 0.45],
+    [nx - 0.18, ny + 0.06, zSpan * 0.45],
+  ];
+  root.userData.nozzles.forEach((nz, i) => {
+    nz.position.fromArray(nozzlePos[i]);
+  });
+  root.userData.jetLights.forEach((light, i) => {
+    light.position.set(nozzlePos[i][0] - 0.12, nozzlePos[i][1], nozzlePos[i][2]);
+  });
+  root.userData.plumes.forEach((p, i) => {
+    p.group.position.set(nozzlePos[i][0] - 0.1, nozzlePos[i][1], nozzlePos[i][2]);
+  });
+
+  const height = boxBody.max.y - boxBody.min.y;
+  CAR_CLEARANCE = THREE.MathUtils.clamp(height * 0.95, 1.0, 1.15);
+
+  root.userData.wheels = wheels;
+  root.userData.model = model;
+  root.userData.ready = true;
+  root.userData._height = height;
+
+  draco.dispose();
+  return root;
+}
+
+const roadster = createRoadsterPlaceholder();
 scene.add(roadster);
-// World-space jet particles (must NOT be parented under the moving car root)
 scene.add(roadster.userData.jets);
 
 /* ── World segments ───────────────────────────────────────── */
@@ -693,27 +749,23 @@ const trainPool = [];
 const pickupPool = [];
 const particles = [];
 
-const BUILDING_PALETTE = [
-  0xf2645a, 0xf4a261, 0xe9c46a, 0x2a9d8f, 0x457b9d,
-  0xe76f51, 0x9b5de5, 0x00bbf9, 0xfee440, 0xff6b6b,
-  0x4ecdc4, 0xff9f1c, 0x7bdff2, 0xb388eb, 0xff85a1,
-];
-
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
   const cutawayMats = [];
-  const facadeMap = texFacade.clone();
-  facadeMap.needsUpdate = true;
-  facadeMap.repeat.set(
-    Math.max(1, Math.round(w / 2.2)),
-    Math.max(2, Math.round(h / 2.8))
-  );
+  const useBrick = Math.random() > 0.42;
+  const src = useBrick ? maps.brick : maps.facade;
+  const diff = cloneMap(src.diff, Math.max(1, Math.round(w / 2.4)), Math.max(2, Math.round(h / 3.0)));
+  const nor = cloneMap(src.nor, diff.repeat.x, diff.repeat.y);
+  const rough = cloneMap(src.rough, diff.repeat.x, diff.repeat.y);
   const bodyMat = new THREE.MeshStandardMaterial({
     color,
-    map: facadeMap,
-    roughness: 0.72,
-    metalness: 0.18,
-    envMapIntensity: 0.45,
+    map: diff,
+    normalMap: nor,
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughnessMap: rough,
+    roughness: 0.78,
+    metalness: useBrick ? 0.08 : 0.22,
+    envMapIntensity: 0.4,
   });
   cutawayMats.push(bodyMat);
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
@@ -722,23 +774,22 @@ function makeBuilding(w, h, d, color) {
   mesh.receiveShadow = true;
   g.add(mesh);
 
-  // Lit window panes on the street-facing side
   const winMat = new THREE.MeshStandardMaterial({
     color: 0xcfefff,
     emissive: 0x7ab8d8,
-    emissiveIntensity: 0.55 + Math.random() * 0.35,
-    roughness: 0.25,
-    metalness: 0.35,
-    envMapIntensity: 0.8,
+    emissiveIntensity: 0.45 + Math.random() * 0.4,
+    roughness: 0.22,
+    metalness: 0.4,
+    envMapIntensity: 0.85,
   });
   cutawayMats.push(winMat);
-  const rows = Math.max(2, Math.floor(h / 1.35));
-  const cols = Math.max(2, Math.floor(w / 1.05));
+  const rows = Math.max(2, Math.floor(h / 1.45));
+  const cols = Math.max(2, Math.floor(w / 1.1));
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (Math.random() > 0.62) continue;
+      if (Math.random() > 0.55) continue;
       const win = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.32 + Math.random() * 0.08, 0.4 + Math.random() * 0.1),
+        new THREE.PlaneGeometry(0.3 + Math.random() * 0.1, 0.38 + Math.random() * 0.1),
         winMat
       );
       win.position.set(
@@ -750,30 +801,27 @@ function makeBuilding(w, h, d, color) {
     }
   }
 
-  // Side facade tint strip for depth
   const sideMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color).multiplyScalar(0.72),
-    roughness: 0.8,
-    metalness: 0.12,
+    color: new THREE.Color(color).multiplyScalar(0.78),
+    map: cloneMap(maps.brick.diff, Math.max(1, d / 3), Math.max(2, h / 3)),
+    roughness: 0.85,
+    metalness: 0.1,
   });
   cutawayMats.push(sideMat);
   for (const side of [-1, 1]) {
-    const strip = new THREE.Mesh(
-      new THREE.PlaneGeometry(d * 0.92, h * 0.92),
-      sideMat
-    );
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(d * 0.92, h * 0.92), sideMat);
     strip.position.set(side * (w / 2 + 0.01), h / 2, 0);
     strip.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
     g.add(strip);
   }
 
-  // Roof accent / HVAC box
   if (h > 5) {
     const roofMat = new THREE.MeshStandardMaterial({
       color: 0xd8dde6,
-      metalness: 0.55,
-      roughness: 0.4,
-      envMapIntensity: 0.7,
+      map: cloneMap(maps.concrete.diff, 2, 2),
+      metalness: 0.45,
+      roughness: 0.45,
+      envMapIntensity: 0.65,
     });
     cutawayMats.push(roofMat);
     const roof = new THREE.Mesh(
@@ -790,6 +838,7 @@ function makeBuilding(w, h, d, color) {
   g.userData.buildingD = d;
   return g;
 }
+
 
 function makeTrain(length = 10) {
   const g = new THREE.Group();
@@ -1049,36 +1098,44 @@ function makeCeilingSpike(level) {
   return g;
 }
 
+
 function createDeckSurface(levelIndex, zCenter) {
   const g = new THREE.Group();
   const ly = LEVELS[levelIndex].y;
   const width = levelIndex === 0 ? 10 : levelIndex === 1 ? 8.5 : 7.5;
-  const deckTints = [0xffffff, 0xb8d0f0, 0xf0c4a8];
+  const deckTints = [0xffffff, 0xd8e4f2, 0xf0ddd0];
   const railColors = [0xffd166, 0x06d6a0, 0xef476f];
   const cutawayMats = [];
 
-  const asphaltMap = texAsphalt.clone();
-  asphaltMap.needsUpdate = true;
-  asphaltMap.repeat.set(SEGMENT_LEN / 4.5, width / 3.2);
-  const roughMap = texAsphaltRough.clone();
-  roughMap.needsUpdate = true;
-  roughMap.repeat.copy(asphaltMap.repeat);
+  const repX = SEGMENT_LEN / 8;
+  const repY = width / 4;
+  const asphaltMap = cloneMap(maps.asphalt.diff, repX, repY);
+  const asphaltNor = cloneMap(maps.asphalt.nor, repX, repY);
+  const asphaltRough = cloneMap(maps.asphalt.rough, repX, repY);
+  const asphaltAO = cloneMap(maps.asphalt.ao, repX, repY);
   const roadMat = new THREE.MeshStandardMaterial({
     color: deckTints[levelIndex],
     map: asphaltMap,
-    roughnessMap: roughMap,
-    roughness: 0.92,
+    normalMap: asphaltNor,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: asphaltRough,
+    aoMap: asphaltAO,
+    aoMapIntensity: 0.9,
+    roughness: 0.95,
     metalness: 0.04,
     envMapIntensity: 0.22,
   });
   cutawayMats.push(roadMat);
-  const road = new THREE.Mesh(new THREE.BoxGeometry(SEGMENT_LEN, 0.4, width), roadMat);
+  const roadGeo = new THREE.BoxGeometry(SEGMENT_LEN, 0.4, width);
+  if (roadGeo.attributes.uv) {
+    roadGeo.setAttribute("uv2", roadGeo.attributes.uv);
+  }
+  const road = new THREE.Mesh(roadGeo, roadMat);
   road.position.set(0, ly - 0.18, 0);
   road.receiveShadow = true;
   road.castShadow = true;
   g.add(road);
 
-  // Shoulder edge lines (asphalt lane markings)
   const edgeLineMat = new THREE.MeshStandardMaterial({
     color: 0xf5f0d8,
     emissive: 0x443820,
@@ -1095,13 +1152,17 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(edge);
   }
 
-  // Underside slab = ceiling driving surface for the level below
   if (levelIndex > 0) {
+    const cRepX = SEGMENT_LEN / 10;
+    const cRepY = width / 5;
     const underMat = new THREE.MeshStandardMaterial({
-      color: levelIndex === 1 ? 0x7aa2c9 : 0xd4896a,
-      metalness: 0.42,
-      roughness: 0.48,
-      envMapIntensity: 0.55,
+      color: levelIndex === 1 ? 0xc5d4e4 : 0xe0c4b0,
+      map: cloneMap(maps.concrete.diff, cRepX, cRepY),
+      normalMap: cloneMap(maps.concrete.nor, cRepX, cRepY),
+      roughnessMap: cloneMap(maps.concrete.rough, cRepX, cRepY),
+      metalness: 0.28,
+      roughness: 0.72,
+      envMapIntensity: 0.45,
     });
     cutawayMats.push(underMat);
     const under = new THREE.Mesh(
@@ -1122,7 +1183,6 @@ function createDeckSurface(levelIndex, zCenter) {
     );
     underStripe.position.set(0, ly - 0.85, 0);
     g.add(underStripe);
-    // Ceiling lane dashes (visible when driving upside-down)
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xa5f3fc,
       emissive: 0x0891b2,
@@ -1135,13 +1195,15 @@ function createDeckSurface(levelIndex, zCenter) {
     }
   }
 
-  // Roof canopy — ceiling surface for the top level
   if (levelIndex === 2) {
     const canopyY = ceilingY(2) + DECK_THICK;
     const canopyMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      metalness: 0.4,
-      roughness: 0.55,
+      color: 0x8a93a0,
+      map: cloneMap(maps.concrete.diff, SEGMENT_LEN / 10, width / 4),
+      normalMap: cloneMap(maps.concrete.nor, SEGMENT_LEN / 10, width / 4),
+      roughnessMap: cloneMap(maps.concrete.rough, SEGMENT_LEN / 10, width / 4),
+      metalness: 0.3,
+      roughness: 0.7,
     });
     cutawayMats.push(canopyMat);
     const canopy = new THREE.Mesh(
@@ -1164,7 +1226,6 @@ function createDeckSurface(levelIndex, zCenter) {
     }
   }
 
-  // Center dashed line
   const lineMat =
     levelIndex === 2
       ? new THREE.MeshStandardMaterial({
@@ -1179,7 +1240,15 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(dash);
   }
 
-  // Edge rails / curbs — bright so levels read clearly
+  const pillarMat = new THREE.MeshStandardMaterial({
+    color: 0xb0b8c4,
+    map: cloneMap(maps.concrete.diff, 1.5, 3),
+    normalMap: cloneMap(maps.concrete.nor, 1.5, 3),
+    roughnessMap: cloneMap(maps.concrete.rough, 1.5, 3),
+    roughness: 0.75,
+    metalness: 0.2,
+  });
+
   for (const side of [-1, 1]) {
     const curb = new THREE.Mesh(
       new THREE.BoxGeometry(SEGMENT_LEN, 0.45, 0.32),
@@ -1199,11 +1268,7 @@ function createDeckSurface(levelIndex, zCenter) {
       for (let p = 0; p < 3; p++) {
         const pillar = new THREE.Mesh(
           new THREE.CylinderGeometry(0.35, 0.45, ly - 0.3, 8),
-          new THREE.MeshStandardMaterial({
-            color: 0x8d99ae,
-            roughness: 0.65,
-            metalness: 0.35,
-          })
+          pillarMat
         );
         pillar.position.set(
           -SEGMENT_LEN / 2 + 4 + p * 10,
@@ -1217,21 +1282,24 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex === 0) {
+    const walkMat = new THREE.MeshStandardMaterial({
+      color: 0xc8cdd4,
+      map: cloneMap(maps.concrete.diff, SEGMENT_LEN / 8, 1.2),
+      normalMap: cloneMap(maps.concrete.nor, SEGMENT_LEN / 8, 1.2),
+      roughnessMap: cloneMap(maps.concrete.rough, SEGMENT_LEN / 8, 1.2),
+      roughness: 0.9,
+      metalness: 0.06,
+      envMapIntensity: 0.2,
+    });
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN, 0.28, 1.9),
-        new THREE.MeshStandardMaterial({
-          color: 0xb8c0cc,
-          roughness: 0.88,
-          metalness: 0.08,
-          envMapIntensity: 0.2,
-        })
+        walkMat
       );
       walk.position.set(0, ly + 0.06, side * 5.6);
       walk.receiveShadow = true;
       g.add(walk);
 
-      // Colorful planters / barriers along street
       for (let i = 0; i < 4; i++) {
         const pot = new THREE.Mesh(
           new THREE.BoxGeometry(0.7, 0.7, 0.7),
@@ -1251,6 +1319,7 @@ function createDeckSurface(levelIndex, zCenter) {
   g.userData = { levelIndex, zCenter, width, hasGap: false, cutawayMats };
   return g;
 }
+
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
@@ -1657,6 +1726,7 @@ function beginFlip() {
   return true;
 }
 
+
 function updatePlayer(dt) {
   const ud = roadster.userData;
 
@@ -1742,6 +1812,7 @@ function updatePlayer(dt) {
   if (state.invuln > 0) state.invuln -= dt;
   else checkCollisions();
 }
+
 
 function checkCollisions() {
   const px = roadster.position.x;
@@ -1833,15 +1904,47 @@ function updateTrains(dt) {
   }
 }
 
+
 /**
- * Thrusters (visual only). Compact body-local plumes + short world sparks.
- * Prior weirdness: oversized depthTest:false cones/flare drew through the car
- * and road; particles ignored car forward speed so trails streaked oddly.
+ * Thrusters (visual only). Cold-gas condensation vapor — no fire/orange.
+ * Soft textured sprites expand and fade from belly nozzles (body-parented).
  */
 function burstThrusters(amount = 1, hold = 0.45) {
   const ud = roadster.userData;
   ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
   ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
+}
+
+function spawnVapor(ud, lvl) {
+  const { vaporSprites, vaporLife, vaporVel, vaporCount, nozzles, _q, _belly, _origin, body } =
+    ud;
+  if (!vaporSprites || !vaporSprites.length) return;
+  let slot = -1;
+  for (let i = 0; i < vaporCount; i++) {
+    if (vaporLife[i] <= 0) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) return;
+  const nz = nozzles[slot % nozzles.length];
+  nz.getWorldPosition(_origin);
+  const spr = vaporSprites[slot];
+  spr.position.set(
+    _origin.x + (Math.random() - 0.5) * 0.1,
+    _origin.y + (Math.random() - 0.5) * 0.06,
+    _origin.z + (Math.random() - 0.5) * 0.1
+  );
+  const jetSpeed = 2.2 + lvl * 3.5;
+  vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.75;
+  vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.5;
+  vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.5;
+  vaporLife[slot] = 0.18 + Math.random() * 0.16;
+  const base = 0.22 + lvl * 0.2;
+  spr.scale.setScalar(base);
+  spr.material.opacity = 0.55 + lvl * 0.35;
+  spr.material.color.setHex(Math.random() > 0.5 ? 0xf4f7fa : 0xd8dee6);
+  spr.visible = true;
 }
 
 function updateThrusters(dt) {
@@ -1862,19 +1965,13 @@ function updateThrusters(dt) {
   const active = lvl > 0.04;
 
   for (const light of ud.jetLights) {
-    light.intensity = active ? 0.8 + lvl * 1.6 : 0;
-    light.distance = 3.5 + lvl * 2;
-    light.color.setHex(0x7dd3fc);
+    light.intensity = active ? 0.35 + lvl * 0.9 : 0;
+    light.distance = 2.8 + lvl * 1.5;
+    light.color.setHex(0xe2e8f0);
   }
 
-  ud.plumes.forEach((p, i) => {
+  ud.plumes.forEach((p) => {
     p.group.visible = active;
-    // Mild flicker — no huge scale pops
-    const pulse = 1 + Math.sin(state.time * 22 + i * 1.4) * 0.04;
-    const len = (0.85 + lvl * 0.45) * pulse;
-    p.group.scale.set(0.9 + lvl * 0.2, len, 0.9 + lvl * 0.2);
-    p.core.material.opacity = active ? 0.55 + lvl * 0.35 : 0;
-    p.glow.material.opacity = active ? 0.28 + lvl * 0.32 : 0;
   });
 
   const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
@@ -1883,8 +1980,12 @@ function updateThrusters(dt) {
   _belly.set(0, -1, 0).applyQuaternion(_q);
 
   if (active) {
-    const spawnN = state.hopping || state.flipping ? 2 : 1;
-    for (let s = 0; s < spawnN; s++) {
+    const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
+    const spawnN = burst ? (QUALITY === "low" ? 2 : 3) : 1;
+    for (let s = 0; s < spawnN; s++) spawnVapor(ud, lvl);
+
+    // Subtle points
+    for (let s = 0; s < (burst ? 1 : 0); s++) {
       let slot = -1;
       for (let i = 0; i < jetCount; i++) {
         if (jetLife[i] <= 0) {
@@ -1895,17 +1996,40 @@ function updateThrusters(dt) {
       if (slot < 0) continue;
       const nz = ud.nozzles[s % ud.nozzles.length];
       nz.getWorldPosition(_origin);
-      jetPos[slot * 3] = _origin.x + (Math.random() - 0.5) * 0.08;
-      jetPos[slot * 3 + 1] = _origin.y + (Math.random() - 0.5) * 0.06;
-      jetPos[slot * 3 + 2] = _origin.z + (Math.random() - 0.5) * 0.08;
-      // Carry car forward speed so sparks don't streak sideways relative to motion
-      const jetSpeed = 3.5 + lvl * 4;
+      jetPos[slot * 3] = _origin.x;
+      jetPos[slot * 3 + 1] = _origin.y;
+      jetPos[slot * 3 + 2] = _origin.z;
+      const jetSpeed = 3 + lvl * 3;
       jetVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.85;
-      jetVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.6;
-      jetVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.6;
-      jetLife[slot] = 0.12 + Math.random() * 0.1;
+      jetVel[slot * 3 + 1] = _belly.y * jetSpeed;
+      jetVel[slot * 3 + 2] = _belly.z * jetSpeed;
+      jetLife[slot] = 0.1 + Math.random() * 0.08;
     }
   }
+
+  // Update vapor sprites
+  const { vaporSprites, vaporLife, vaporVel, vaporCount } = ud;
+  for (let i = 0; i < vaporCount; i++) {
+    if (vaporLife[i] <= 0) {
+      vaporSprites[i].visible = false;
+      continue;
+    }
+    vaporLife[i] -= dt;
+    const spr = vaporSprites[i];
+    spr.position.x += vaporVel[i * 3] * dt;
+    spr.position.y += vaporVel[i * 3 + 1] * dt;
+    spr.position.z += vaporVel[i * 3 + 2] * dt;
+    // Expand and fade quickly
+    const grow = 1 + dt * 3.2;
+    spr.scale.multiplyScalar(grow);
+    spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.8);
+    if (vaporLife[i] <= 0 || spr.material.opacity < 0.02) {
+      vaporLife[i] = 0;
+      spr.visible = false;
+      spr.material.opacity = 0;
+    }
+  }
+
   for (let i = 0; i < jetCount; i++) {
     if (jetLife[i] <= 0) {
       jetPos[i * 3 + 1] = -40;
@@ -1918,9 +2042,17 @@ function updateThrusters(dt) {
     if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
   }
   jets.geometry.attributes.position.needsUpdate = true;
-  jets.material.opacity = active ? 0.45 + lvl * 0.35 : 0;
-  jets.material.size = 0.12 + lvl * 0.12;
+  jets.material.opacity = active ? 0.25 + lvl * 0.2 : 0;
+  jets.material.size = 0.08 + lvl * 0.08;
 }
+
+function anyThrustVisible() {
+  const ud = roadster.userData;
+  if ((ud.plumes || []).some((p) => p.group.visible)) return true;
+  if ((ud.vaporSprites || []).some((s) => s.visible && s.material.opacity > 0.05)) return true;
+  return false;
+}
+
 
 /** Fade decks between camera and car — critical when inverted under a slab. */
 function updateDeckCutaway() {
@@ -2093,6 +2225,10 @@ function die(reason) {
 }
 
 function startGame() {
+  if (!assetsReady) {
+    readyPromise.then(() => startGame());
+    return;
+  }
   try {
     startScreen?.classList.add("hidden");
     gameoverScreen?.classList.add("hidden");
@@ -2212,7 +2348,12 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_CAP));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) {
+    composer.setSize(window.innerWidth, window.innerHeight);
+    bloomPass?.setSize(window.innerWidth, window.innerHeight);
+  }
 });
+
 
 function setupPreview() {
   resetWorld();
@@ -2225,7 +2366,6 @@ function setupPreview() {
   camera.position.copy(camPos);
   camera.lookAt(8, 0.9, 0);
 }
-setupPreview();
 
 const clock = new THREE.Clock();
 let previewAngle = 0;
@@ -2244,6 +2384,14 @@ function applyQualityFallback() {
   sun.shadow.mapSize.set(512, 512);
   sun.shadow.map?.dispose?.();
   sun.shadow.map = null;
+  sun.shadow.radius = 0;
+  composer = null;
+  bloomPass = null;
+}
+
+function renderFrame() {
+  if (composer && QUALITY === "high") composer.render();
+  else renderer.render(scene, camera);
 }
 
 function animate() {
@@ -2255,6 +2403,11 @@ function animate() {
     if (!qualityFallen && state.running && state.time > 2.5 && fpsEMA < 28) {
       applyQualityFallback();
     }
+  }
+
+  if (!assetsReady) {
+    renderFrame();
+    return;
   }
 
   if (state.running) {
@@ -2274,7 +2427,6 @@ function animate() {
       w.spinner.rotation.x -= dt * 6;
       w.hub.position.y = w.baseY;
     });
-    // Preview: gently show ceiling flip
     const flipPreview = Math.sin(previewAngle * 0.5) > 0.65;
     if (flipPreview) {
       roadster.userData.body.rotation.x = Math.PI;
@@ -2295,80 +2447,119 @@ function animate() {
     camera.lookAt(roadster.position.x, state.y, 0);
   }
 
-  renderer.render(scene, camera);
+  renderFrame();
 }
 animate();
 
-const params = new URLSearchParams(location.search);
-if (params.has("autostart")) {
-  setTimeout(() => startGame(), 400);
+function exposeAPI() {
+  window.__ROADSTER__ = {
+    startGame,
+    getState: () => ({
+      running: state.running,
+      dead: state.dead,
+      time: state.time,
+      speed: state.speed,
+      baseSpeed: state.baseSpeed,
+      maxSpeed: state.maxSpeed,
+      level: state.level,
+      inverted: state.inverted,
+      y: state.y,
+      roll: state.roll,
+      hopping: state.hopping,
+      flipping: state.flipping,
+      reason: state.reason,
+      invuln: state.invuln,
+      bestTime,
+      thrustLevel: roadster.userData.thrustLevel || 0,
+      thrustHold: roadster.userData.thrustHold || 0,
+      thrustVisible: anyThrustVisible(),
+    }),
+    pressUp: () => {
+      input.up = true;
+    },
+    pressDown: () => {
+      input.down = true;
+    },
+    pressFlip: () => {
+      input.flip = true;
+    },
+    pressJump: () => {
+      input.up = true;
+    },
+    pressDrop: () => {
+      input.down = true;
+    },
+    validateGapPlan,
+    minOverlapDist,
+    /** Force-generate columns ahead so the plan can be validated far out. */
+    extendPlan(cols = 40) {
+      const start = nextSegmentX;
+      for (let i = 0; i < cols; i++) spawnSegment(nextSegmentX);
+      return { from: start, to: nextSegmentX, ...validateGapPlan() };
+    },
+    setLevel(level, inverted = false) {
+      const li = Math.max(0, Math.min(LEVELS.length - 1, level | 0));
+      state.level = li;
+      state.inverted = !!inverted;
+      state.y = surfaceY(li, state.inverted);
+      state.roll = state.inverted ? Math.PI : 0;
+      state.hopping = false;
+      state.flipping = false;
+      roadster.position.y = state.y;
+      roadster.userData.body.rotation.x = state.roll;
+      for (const w of roadster.userData.wheels) {
+        w.hub.position.y = w.baseY;
+      }
+      updateDeckCutaway();
+      updateBuildingCutaway();
+    },
+    simulate(seconds) {
+      const step = 1 / 60;
+      const frames = Math.max(1, Math.floor(seconds / step));
+      for (let i = 0; i < frames; i++) {
+        if (!state.running) break;
+        state.time += step;
+        updatePlayer(step);
+        updateTrains(step);
+        pruneWorld(roadster.position.x);
+        updateParticles(step);
+        updateCamera(step);
+        updateHUD();
+      }
+      renderFrame();
+      return window.__ROADSTER__.getState();
+    },
+  };
 }
 
-window.__ROADSTER__ = {
-  startGame,
-  getState: () => ({
-    running: state.running,
-    dead: state.dead,
-    time: state.time,
-    speed: state.speed,
-    baseSpeed: state.baseSpeed,
-    maxSpeed: state.maxSpeed,
-    level: state.level,
-    inverted: state.inverted,
-    y: state.y,
-    roll: state.roll,
-    hopping: state.hopping,
-    flipping: state.flipping,
-    reason: state.reason,
-    invuln: state.invuln,
-    bestTime,
-    thrustLevel: roadster.userData.thrustLevel || 0,
-    thrustHold: roadster.userData.thrustHold || 0,
-    thrustVisible: (roadster.userData.plumes || []).some((p) => p.group.visible),
-  }),
-  pressUp: () => { input.up = true; },
-  pressDown: () => { input.down = true; },
-  pressFlip: () => { input.flip = true; },
-  pressJump: () => { input.up = true; },
-  pressDrop: () => { input.down = true; },
-  validateGapPlan,
-  minOverlapDist,
-  /** Force-generate columns ahead so the plan can be validated far out. */
-  extendPlan(cols = 40) {
-    const start = nextSegmentX;
-    for (let i = 0; i < cols; i++) spawnSegment(nextSegmentX);
-    return { from: start, to: nextSegmentX, ...validateGapPlan() };
-  },
-  setLevel(level, inverted = false) {
-    const li = Math.max(0, Math.min(LEVELS.length - 1, level | 0));
-    state.level = li;
-    state.inverted = !!inverted;
-    state.y = surfaceY(li, state.inverted);
-    state.roll = state.inverted ? Math.PI : 0;
-    state.hopping = false;
-    state.flipping = false;
-    roadster.position.y = state.y;
-    roadster.userData.body.rotation.x = state.roll;
-    for (const w of roadster.userData.wheels) {
-      w.hub.position.y = w.baseY;
+async function boot() {
+  try {
+    setLoading(0.08, "Loading textures…");
+    await loadWorldTextures();
+    setLoading(0.28, "Loading sky…");
+    await loadEnvironment();
+    setLoading(0.48, "Loading Roadster…");
+    await loadRoadsterModel(roadster);
+    setLoading(0.95, "Building city…");
+    setupPreview();
+    setLoading(1, "Ready");
+    assetsReady = true;
+    finishLoadingUI();
+    exposeAPI();
+    readyResolve?.();
+
+    const params = new URLSearchParams(location.search);
+    if (params.has("autostart")) {
+      setTimeout(() => startGame(), 200);
     }
-    updateDeckCutaway();
-    updateBuildingCutaway();
-  },
-  simulate(seconds) {
-    const step = 1 / 60;
-    const frames = Math.max(1, Math.floor(seconds / step));
-    for (let i = 0; i < frames; i++) {
-      if (!state.running) break;
-      state.time += step;
-      updatePlayer(step);
-      updateTrains(step);
-      pruneWorld(roadster.position.x);
-      updateParticles(step);
-      updateCamera(step);
-      updateHUD();
-    }
-    renderer.render(scene, camera);
-    return window.__ROADSTER__.getState();
-  },
-};
+  } catch (err) {
+    console.error("Boot failed", err);
+    const box = document.getElementById("boot-error");
+    const msg = document.getElementById("boot-error-msg");
+    if (msg) msg.textContent = "Boot failed: " + (err?.message || err);
+    box?.classList.remove("hidden");
+    loadingScreen?.classList.add("hidden");
+  }
+}
+
+boot();

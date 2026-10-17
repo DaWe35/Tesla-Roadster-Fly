@@ -13,7 +13,8 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "./vendor/three.module.js"
+      "three": "./vendor/three.module.js",
+      "three/addons/": "./vendor/addons/"
     }
   }
   </script>
@@ -29,6 +30,17 @@
   </div>
   <div id="game-root">
     <canvas id="game-canvas"></canvas>
+
+    <div id="loading-screen" class="overlay" aria-live="polite" aria-busy="true">
+      <div class="overlay-panel loading-panel">
+        <p class="brand">ROADSTER RISE</p>
+        <h1>Loading Roadster…</h1>
+        <p class="tagline" id="loading-text">Preparing model and sky…</p>
+        <div class="loading-bar" aria-hidden="true">
+          <div id="loading-bar-fill" class="loading-bar-fill"></div>
+        </div>
+      </div>
+    </div>
 
     <div id="hud" class="hidden">
       <div class="hud-top">
@@ -46,7 +58,7 @@
 
     <div id="play-hint" class="play-hint hidden" aria-live="polite"></div>
 
-    <div id="start-screen" class="overlay">
+    <div id="start-screen" class="overlay hidden">
       <div class="overlay-panel">
         <p class="brand">ROADSTER RISE</p>
         <h1>Climb. Flip. Survive.</h1>
@@ -59,7 +71,7 @@
           <li><kbd>↓</kbd> / <kbd>S</kbd> / swipe down — move one level down</li>
           <li><kbd>Shift</kbd> / <strong>Flip</strong> — stick to the ceiling or return to the floor</li>
         </ul>
-        <button type="button" id="start-btn" class="cta">START RUN</button>
+        <button type="button" id="start-btn" class="cta" disabled>START RUN</button>
         <p class="best-line">Best: <span id="start-best">0.0s</span></p>
       </div>
     </div>
