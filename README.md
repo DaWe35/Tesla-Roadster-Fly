@@ -35,7 +35,7 @@ Cold-gas thrusters flare on hops and flips, and glow while you hang inverted (vi
 ### Tech
 
 - Plain HTML / CSS / JS · three.js r170 at `vendor/three.module.js` (+ `vendor/addons/`, Draco decoder)
-- Custom low-poly faceted 2026 Roadster (authored in-engine), HDRI sky, PBR city textures
+- Custom faceted 2026 Roadster GLB (Blender-authored), HDRI sky, PBR city textures
 - Pages workflow: `.github/workflows/pages.yml`
 
 ### Assets / Credits

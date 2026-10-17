@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
@@ -797,45 +798,19 @@ function createEmptyThrusterData(body) {
     jetLights.push(light);
   }
 
-  // Dense white jet column meshes (shafts) — body −Y
+  // Plume markers (visibility API) — actual shafts are sprite stacks (kind 0)
   const plumes = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
     group.position.copy(nozzles[i].position);
-    group.position.y -= 0.12;
-    const core = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.04, 0.07, 0.95, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.NormalBlending,
-      })
-    );
-    // Inner denser shaft
-    const inner = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.038, 0.95, 6, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.NormalBlending,
-      })
-    );
-    core.position.y = -0.45;
-    inner.position.y = -0.45;
-    group.add(core);
-    group.add(inner);
-    group.userData.inner = inner;
+    group.position.y -= 0.1;
     group.visible = false;
     thrusterBay.add(group);
-    plumes.push({ group, core, inner, tip: tipGlows[i] });
+    plumes.push({ group, tip: tipGlows[i] });
   }
 
-  // Soft volumetric sprite pool: 0=jet puff, 1=ground cloud, 2=trail, 3=side puff
-  const vaporCount = QUALITY === "low" ? 64 : 96;
+  // Soft volumetric sprite pool: 0=jet shaft, 1=ground cloud, 2=trail, 3=side puff
+  const vaporCount = QUALITY === "low" ? 128 : 220;
   const vaporSprites = [];
   const vaporLife = new Float32Array(vaporCount);
   const vaporMax = new Float32Array(vaporCount);
@@ -949,25 +924,98 @@ function wrapWheels(nodes, body) {
   return wheels;
 }
 
+function collectNamedWheels(model) {
+  const found = [];
+  const tags = ["Wheel_Ft_L", "Wheel_Ft_R", "Wheel_Bk_L", "Wheel_Bk_R"];
+  model.traverse((obj) => {
+    if (!obj.name) return;
+    for (const tag of tags) {
+      if (obj.name === tag || obj.name.startsWith(tag + "_")) {
+        // Prefer the empty/group hub named exactly Wheel_*
+        if (obj.name === tag) found.push(obj);
+      }
+    }
+  });
+  // Deduplicate
+  return [...new Set(found)];
+}
+
 async function loadRoadsterModel(root) {
   const body = root.userData.body;
-  setLoading(0.55, "Building 2026 Roadster…");
+  setLoading(0.5, "Loading 2026 Roadster…");
 
-  const { model, wheelNodes } = buildRoadster2026();
+  const loader = new GLTFLoader();
+  let model;
+  try {
+    const gltf = await new Promise((resolve, reject) => {
+      loader.load(
+        "assets/models/tesla-roadster-2026.glb",
+        resolve,
+        (ev) => {
+          if (ev.total) setLoading(0.5 + 0.35 * (ev.loaded / ev.total), "Loading Roadster…");
+        },
+        reject
+      );
+    });
+    model = gltf.scene;
+    model.name = "tesla-roadster-2026";
+  } catch (err) {
+    console.warn("GLB load failed — procedural fallback", err);
+    const built = buildRoadster2026();
+    model = built.model;
+  }
+
+  // Authored GLB: +X forward, +Y up — sit tires on y=0
+  model.updateMatrixWorld(true);
+  const box0 = new THREE.Box3().setFromObject(model);
+  model.position.y -= box0.min.y;
+  // Fit length ~4.4 if slightly off
+  model.updateMatrixWorld(true);
+  const size0 = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+  if (size0.x > 0.1) {
+    const s = THREE.MathUtils.clamp(4.4 / size0.x, 0.9, 1.15);
+    model.scale.setScalar(s);
+    model.updateMatrixWorld(true);
+    const box1 = new THREE.Box3().setFromObject(model);
+    model.position.y -= box1.min.y;
+  }
+
   body.add(model);
   model.updateMatrixWorld(true);
+
+  model.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m) continue;
+        if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+        m.envMapIntensity = Math.max(m.envMapIntensity || 0, 0.9);
+        // Keep canopy opaque — no see-through gaps
+        if (o.name === "Canopy" || (m.name && /glass/i.test(m.name))) {
+          m.transparent = false;
+          m.opacity = 1;
+          if ("transmission" in m) m.transmission = 0;
+          m.depthWrite = true;
+        }
+        m.needsUpdate = true;
+      }
+    }
+  });
 
   if (QUALITY === "high") {
     for (const side of [-1, 1]) {
       const glow = new THREE.PointLight(0xfff0c8, 0.35, 5);
-      glow.position.set(2.05, 0.4, side * 0.7);
+      glow.position.set(2.0, 0.4, side * 0.7);
       body.add(glow);
     }
   }
 
   let wheels = [];
   try {
-    wheels = wrapWheels(wheelNodes, body);
+    const nodes = collectNamedWheels(model);
+    if (nodes.length) wheels = wrapWheels(nodes, body);
   } catch (err) {
     console.warn("Wheel wrap failed", err);
   }
@@ -979,12 +1027,11 @@ async function loadRoadsterModel(root) {
     }
   }
 
-  // Thruster bay at rear underside (min X)
   model.updateMatrixWorld(true);
   const boxBody = new THREE.Box3().setFromObject(model);
   const bay = root.userData.thrusterBay;
   if (bay) {
-    bay.position.set(boxBody.min.x + 0.28, boxBody.min.y + 0.14, 0);
+    bay.position.set(boxBody.min.x + 0.3, boxBody.min.y + 0.12, 0);
   }
 
   const height = boxBody.max.y - boxBody.min.y;
@@ -1976,19 +2023,21 @@ function createDeckSurface(levelIndex, zCenter) {
           g.add(win);
         }
       } else {
-        // Camera side: quiet dark asphalt strip beyond apron (no noisy gravel)
-        const plazaZ = roadHalf + curbW + walkW + apronW + 1.0;
-        const plazaMat = new THREE.MeshStandardMaterial({
-          color: 0x5a5e64,
-          roughness: 0.92,
-          metalness: 0.04,
-          envMapIntensity: 0.15,
+        // Camera side stays open — no reflective grey plaza filling the frame.
+        // A recessed matte asphalt pad only, well below street level.
+        const plazaZ = roadHalf + curbW + walkW + apronW + 1.6;
+        const plazaMat = pbrFrom(maps.asphalt, SEGMENT_LEN / 1.2, 3.2 / 1.2, {
+          color: 0x2e3238,
+          roughness: 1.0,
+          metalness: 0.0,
+          envMapIntensity: 0.02,
+          normalScale: new THREE.Vector2(0.35, 0.35),
         });
         const plaza = new THREE.Mesh(
-          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.08, 2.0),
+          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.06, 3.2),
           plazaMat
         );
-        plaza.position.set(0, -0.18, -plazaZ);
+        plaza.position.set(0, -0.55, -plazaZ);
         plaza.receiveShadow = true;
         g.add(plaza);
       }
@@ -2567,7 +2616,8 @@ function updatePlayer(dt) {
   state.wheelSpin += (state.speed / 0.36) * dt;
   for (const w of ud.wheels) {
     // Positive X rotation = top of wheel moves toward −X / rear when car faces +X
-    w.spinner.rotation.x = state.wheelSpin;
+    // Axle is along local Z after glTF Y-up conversion from Blender
+    w.spinner.rotation.z = state.wheelSpin;
     w.hub.position.y = w.baseY + state.suspension * 0.35;
   }
 
@@ -2707,7 +2757,8 @@ function spawnVaporAt(ud, kind, x, y, z, vx, vy, vz, scale, life, opacity = 0.9)
   spr.scale.setScalar(scale);
   spr.material.opacity = opacity;
   spr.material.color.setHex(0xffffff);
-  spr.material.blending = THREE.NormalBlending;
+  // Shafts use additive for bright opaque jet cores; clouds stay normal soft
+  spr.material.blending = kind === 0 ? THREE.AdditiveBlending : THREE.NormalBlending;
   spr.visible = true;
 }
 
@@ -2750,64 +2801,61 @@ function updateThrusters(dt) {
     }
   }
 
-  // Dense white jet columns (opaque shafts)
-  const colLen = 0.65 + lvl * 0.7;
+  // Thick volumetric jet shafts = stacked soft sprites (press-photo density)
+  const colLen = 1.15 + lvl * 1.35;
   ud.plumes.forEach((p) => {
     p.group.visible = active;
-    if (p.core) {
-      p.core.scale.set(1, colLen / 0.95, 1);
-      p.core.position.y = -colLen * 0.5;
-      if (p.core.material) p.core.material.opacity = active ? 0.85 + lvl * 0.15 : 0;
-    }
-    if (p.inner) {
-      p.inner.scale.set(1, colLen / 0.95, 1);
-      p.inner.position.y = -colLen * 0.5;
-      if (p.inner.material) p.inner.material.opacity = active ? 0.95 : 0;
-    }
   });
 
   if (active) {
     const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
     const sustain = state.inverted && state.running && !state.dead;
 
-    // Jet-column puffs along belly direction
-    const jetN = burst ? (QUALITY === "low" ? 2 : 3) : 1;
-    for (let s = 0; s < jetN; s++) {
-      const nz = ud.nozzles[s % ud.nozzles.length];
+    // Dense opaque white shaft sprites along each nozzle — thick, not thin cylinders
+    const shaftPerNozzle = burst ? (QUALITY === "low" ? 5 : 8) : sustain ? 5 : 3;
+    for (let n = 0; n < ud.nozzles.length; n++) {
+      const nz = ud.nozzles[n];
       nz.getWorldPosition(_origin);
-      _origin.addScaledVector(_belly, 0.08 + Math.random() * colLen * 0.5);
-      const spd = 2.5 + lvl * 3;
-      spawnVaporAt(
-        ud,
-        0,
-        _origin.x,
-        _origin.y,
-        _origin.z,
-        _belly.x * spd + _fwd.x * state.speed * 0.15,
-        _belly.y * spd,
-        _belly.z * spd + _fwd.z * state.speed * 0.15,
-        0.18 + lvl * 0.12,
-        0.12 + Math.random() * 0.08,
-        0.95
-      );
+      for (let s = 0; s < shaftPerNozzle; s++) {
+        const along = 0.04 + (s / shaftPerNozzle) * colLen;
+        const px = _origin.x + _belly.x * along;
+        const py = _origin.y + _belly.y * along;
+        const pz = _origin.z + _belly.z * along;
+        const widen = 0.38 + (s / shaftPerNozzle) * 0.42 + lvl * 0.2;
+        spawnVaporAt(
+          ud,
+          0,
+          px + (Math.random() - 0.5) * 0.05,
+          py,
+          pz + (Math.random() - 0.5) * 0.05,
+          _belly.x * (1.8 + lvl) + _fwd.x * state.speed * 0.12,
+          _belly.y * (1.8 + lvl),
+          _belly.z * (1.8 + lvl),
+          widen,
+          0.14 + Math.random() * 0.08,
+          1.0
+        );
+      }
     }
 
-    // Ground / ceiling impact cloud — spawn ON the road surface the jets hit
-    const surfY = surfaceY(state.level, state.inverted);
-    // Surface the belly faces: upright → floor; inverted → ceiling
-    const impactY = state.inverted ? surfY + CAR_CLEARANCE * 0.15 : surfY + 0.04;
+    // Much bigger rolling ground / ceiling impact cloud
+    const impactY = state.inverted
+      ? ceilingY(state.level) - 0.06
+      : floorY(state.level) + 0.05;
     const nearSurf =
-      Math.abs(roadster.position.y - (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))) < 1.6;
+      Math.abs(
+        roadster.position.y -
+          (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))
+      ) < 2.2;
     if (nearSurf || sustain || burst) {
-      const cloudN = burst ? (QUALITY === "low" ? 3 : 5) : sustain ? 3 : 2;
+      const cloudN = burst ? (QUALITY === "low" ? 8 : 14) : sustain ? 8 : 5;
       for (let s = 0; s < cloudN; s++) {
         const nz = ud.nozzles[s % ud.nozzles.length];
         nz.getWorldPosition(_origin);
-        // Project onto surface along belly, then spread sideways
-        const px = _origin.x + (Math.random() - 0.5) * 0.6 + _fwd.x * 0.15;
-        const pz = _origin.z + (Math.random() - 0.5) * 1.1;
-        const py = impactY + (Math.random() - 0.5) * 0.05;
-        const spread = 1.6 + lvl * 2.2;
+        const px = _origin.x + (Math.random() - 0.5) * 1.8 + _fwd.x * 0.3;
+        const pz = _origin.z + (Math.random() - 0.5) * 2.4;
+        const py = impactY + (Math.random() - 0.5) * 0.1;
+        const spread = 3.2 + lvl * 4.0;
         spawnVaporAt(
           ud,
           1,
@@ -2815,34 +2863,34 @@ function updateThrusters(dt) {
           py,
           pz,
           _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.3,
-          (Math.random() - 0.5) * 0.1,
+          (Math.random() - 0.5) * 0.15,
           _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.3,
-          0.7 + lvl * 0.9,
-          0.85 + Math.random() * 0.6,
-          0.92
+          1.6 + lvl * 2.0 + Math.random() * 0.9,
+          1.3 + Math.random() * 1.0,
+          0.98
         );
       }
     }
 
-    // Lingering world-space smoke trails behind the car
+    // Dense lingering trails
     if (burst || sustain) {
-      const trailN = QUALITY === "low" ? 1 : 2;
+      const trailN = QUALITY === "low" ? 4 : 7;
       for (let s = 0; s < trailN; s++) {
         const nz = ud.nozzles[s % ud.nozzles.length];
         nz.getWorldPosition(_origin);
-        _origin.addScaledVector(_belly, 0.2);
+        _origin.addScaledVector(_belly, 0.3 + Math.random() * 0.55);
         spawnVaporAt(
           ud,
           2,
-          _origin.x - _fwd.x * 0.3,
+          _origin.x - _fwd.x * 0.5,
           _origin.y,
-          _origin.z - _fwd.z * 0.3,
-          -_fwd.x * state.speed * 0.2 + (Math.random() - 0.5) * 0.3,
-          _belly.y * 0.4 + (Math.random() - 0.5) * 0.2,
-          -_fwd.z * state.speed * 0.2 + (Math.random() - 0.5) * 0.3,
-          0.45 + Math.random() * 0.35,
-          1.1 + Math.random() * 0.9,
-          0.65
+          _origin.z - _fwd.z * 0.5,
+          -_fwd.x * state.speed * 0.3 + (Math.random() - 0.5) * 0.5,
+          _belly.y * 0.55 + (Math.random() - 0.5) * 0.3,
+          -_fwd.z * state.speed * 0.3 + (Math.random() - 0.5) * 0.5,
+          0.75 + Math.random() * 0.7,
+          1.8 + Math.random() * 1.3,
+          0.85
         );
       }
     }
@@ -2889,26 +2937,27 @@ function updateThrusters(dt) {
     spr.position.z += vaporVel[i * 3 + 2] * dt;
 
     if (kind === 0) {
-      spr.scale.multiplyScalar(1 + dt * 1.5);
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 5);
-    } else if (kind === 1) {
-      // Ground cloud: expand sideways, linger, fade soft
-      spr.scale.x *= 1 + dt * 3.5;
+      // Shaft: stay thick/opaque, slight widen — matches dense press jets
+      spr.scale.x *= 1 + dt * 0.6;
       spr.scale.y *= 1 + dt * 1.2;
       spr.scale.z = spr.scale.x;
-      vaporVel[i * 3] *= 1 - dt * 0.9;
-      vaporVel[i * 3 + 1] *= 1 - dt * 2.5;
-      vaporVel[i * 3 + 2] *= 1 - dt * 0.9;
-      spr.material.opacity = Math.max(0, (1 - t * t) * 0.85);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.6);
+    } else if (kind === 1) {
+      // Ground cloud: expand sideways hard, linger, soft edge fade
+      spr.scale.x *= 1 + dt * 5.2;
+      spr.scale.y *= 1 + dt * 1.6;
+      spr.scale.z = spr.scale.x;
+      vaporVel[i * 3] *= 1 - dt * 0.55;
+      vaporVel[i * 3 + 1] *= 1 - dt * 2.4;
+      vaporVel[i * 3 + 2] *= 1 - dt * 0.55;
+      spr.material.opacity = Math.max(0, (1 - t * t) * 0.98);
     } else if (kind === 2) {
-      // Trail: slow expand, long fade, curls slightly
-      spr.scale.multiplyScalar(1 + dt * 1.8);
-      vaporVel[i * 3 + 1] += Math.sin(t * 6 + i) * dt * 0.4;
-      spr.material.opacity = Math.max(0, (1 - t) * 0.6);
+      spr.scale.multiplyScalar(1 + dt * 2.6);
+      vaporVel[i * 3 + 1] += Math.sin(t * 6 + i) * dt * 0.5;
+      spr.material.opacity = Math.max(0, (1 - t) * 0.82);
     } else {
-      // Side puff
-      spr.scale.multiplyScalar(1 + dt * 4);
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.2);
+      spr.scale.multiplyScalar(1 + dt * 4.5);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.0);
     }
 
     if (vaporLife[i] <= 0 || spr.material.opacity < 0.02) {
@@ -2926,8 +2975,7 @@ function updateThrusters(dt) {
 
 function anyThrustVisible() {
   const ud = roadster.userData;
-  if ((ud.plumes || []).some((p) => p.group.visible && (p.core?.material?.opacity || 0) > 0.05))
-    return true;
+  if ((ud.plumes || []).some((p) => p.group.visible)) return true;
   if ((ud.vaporSprites || []).some((s) => s.visible && s.material.opacity > 0.05)) return true;
   return false;
 }
@@ -3006,39 +3054,39 @@ function updateBuildingCutaway() {
 }
 
 function updateCamera(dt) {
-  // Same low chase framing upright and inverted: sit slightly below/behind the
-  // car and look further ahead so the upcoming road and obstacles stay clear.
+  // Subway Surfers–style chase: directly behind the car, centered on the lane,
+  // slightly above (or below when inverted), looking ahead. Car fills lower-middle.
   const portrait = camera.aspect < 0.9;
-  const baseFov = portrait ? 52 : 48;
-  const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.55;
+  const baseFov = portrait ? 54 : 48;
+  const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.4;
   camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
   camera.updateProjectionMatrix();
 
-  const backX = portrait ? -9.5 : -7.2;
-  const sideZ = portrait ? -17.5 : -13.5;
-  // Same low chase character as inverted: close behind, look far ahead.
-  // Inverted: sit just below the car. Upright: sit just above it (never under the road).
+  // Subway Surfers: camera sits on the lane centerline, close behind the car
+  // so the Roadster fills the lower-middle of the frame (not a side vista).
+  const backX = portrait ? -7.0 : -5.4;
+  const sideZ = 0;
   const inv = state.inverted || state.flipping;
   const desiredY = inv
-    ? state.y - (portrait ? 1.4 : 1.1)
-    : state.y + (portrait ? 1.7 : 1.4);
+    ? state.y - (portrait ? 1.45 : 1.15)
+    : state.y + (portrait ? 1.85 : 1.55);
   const desired = new THREE.Vector3(
     roadster.position.x + backX,
     desiredY,
     roadster.position.z + sideZ
   );
-  const camFollow = inv ? 0.02 : 0.08;
+  const camFollow = inv ? 0.03 : 0.12;
   camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
   camTarget.set(
-    roadster.position.x + (portrait ? 11 : 10),
-    state.y + 0.2,
-    0
+    roadster.position.x + (portrait ? 8 : 7),
+    state.y + (inv ? -0.12 : 0.28),
+    roadster.position.z
   );
   camera.lookAt(camTarget);
 
   sun.target.position.copy(roadster.position);
-  sun.position.set(roadster.position.x - 20, 55, roadster.position.z - 10);
+  sun.position.set(roadster.position.x - 18, 50, roadster.position.z + 8);
   sun.target.updateMatrixWorld();
 }
 
@@ -3128,7 +3176,7 @@ function startGame() {
     roadster.userData.thrustLevel = 0;
     roadster.userData.thrustHold = 0;
     for (const w of roadster.userData.wheels) {
-      w.spinner.rotation.x = 0;
+      w.spinner.rotation.z = 0;
       w.hub.position.y = w.baseY;
     }
     camPos.set(-6.5, 8, -12.2);
@@ -3294,7 +3342,7 @@ function animate() {
     roadster.userData.body.rotation.y = Math.sin(previewAngle) * 0.15;
     roadster.userData.body.rotation.x = 0;
     roadster.userData.wheels.forEach((w) => {
-      w.spinner.rotation.x -= dt * 6;
+      w.spinner.rotation.z -= dt * 6;
       w.hub.position.y = w.baseY;
     });
     const flipPreview = Math.sin(previewAngle * 0.5) > 0.65;

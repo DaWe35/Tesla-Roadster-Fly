@@ -2,7 +2,7 @@
 
 ## Tesla Roadster (in-game mesh)
 
-- **2026 redesign:** No properly licensed GLB of the Oct 15, 2026 McGregor production redesign was available. The in-game car is an **original low-poly faceted model** authored in three.js (`buildRoadster2026` in `js/game.js`), inspired by public press photos of that reveal — not a third-party mesh.
+- **2026 redesign:** No properly licensed third-party GLB of the Oct 15, 2026 McGregor production redesign was available. The in-game car is an **original faceted GLB** authored in Blender (`scripts/blender/build_roadster_2026.py` → `assets/models/tesla-roadster-2026.glb`), inspired by public press photos of that reveal. A procedural three.js fallback (`buildRoadster2026`) remains if the GLB fails to load.
 - **Legacy file:** `assets/models/tesla-roadster-2020.glb` (metarex.4d, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), [Sketchfab](https://sketchfab.com/3d-models/tesla-roadster-2020-1fbf29e297bd4a17ac39a00a378441d8)) remains in the repo for attribution history but is **not loaded** at runtime.
 
 ## Environment & materials (CC0)
