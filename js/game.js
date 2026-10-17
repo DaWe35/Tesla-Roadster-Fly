@@ -1505,7 +1505,6 @@ function createDeckSurface(levelIndex, zCenter) {
   const width = levelIndex === 0 ? 10 : levelIndex === 1 ? 8.5 : 7.5;
   // Subtle level tints on dark asphalt — avoid neon toy rails
   const deckTints = [0x9a9ea6, 0x8e9aaa, 0xa09088];
-  const railTints = [0xc8c2b0, 0xa8b8b4, 0xc0a8a8];
   const cutawayMats = [];
 
   const repX = SEGMENT_LEN / 6;
@@ -1551,13 +1550,15 @@ function createDeckSurface(levelIndex, zCenter) {
   if (levelIndex > 0) {
     const cRepX = SEGMENT_LEN / 8;
     const cRepY = width / 4;
-    const underMat = pbrFrom(maps.concretePanel, cRepX, cRepY, {
-      color: levelIndex === 1 ? 0xc8d0d8 : 0xd8c8bc, // solid concrete, not glassy blue
-      metalness: 0.06,
-      roughness: 0.88,
-      envMapIntensity: 0.28,
-      normalScale: new THREE.Vector2(1.15, 1.15),
+    const underMat = pbrFrom(maps.concreteWall, cRepX, cRepY, {
+      color: levelIndex === 1 ? 0xb8c2cc : 0xc8c0b8,
+      metalness: 0,
+      roughness: 0.94,
+      envMapIntensity: 0.12,
+      normalScale: new THREE.Vector2(0.7, 0.7),
     });
+    underMat.transparent = false;
+    underMat.opacity = 1;
     cutawayMats.push(underMat);
     const under = new THREE.Mesh(
       new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.55, width + 0.6),
@@ -1569,11 +1570,13 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(under);
     // Edge fascia under the deck lip
     const fasciaMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.6, {
-      color: railTints[levelIndex],
-      metalness: 0.08,
-      roughness: 0.82,
-      envMapIntensity: 0.28,
+      color: 0xb0b8c0,
+      metalness: 0,
+      roughness: 0.94,
+      envMapIntensity: 0.1,
     });
+    fasciaMat.transparent = false;
+    fasciaMat.opacity = 1;
     cutawayMats.push(fasciaMat);
     const underStripe = new THREE.Mesh(
       new THREE.BoxGeometry(SEGMENT_LEN, 0.22, width + 0.85),
@@ -1583,14 +1586,13 @@ function createDeckSurface(levelIndex, zCenter) {
     underStripe.castShadow = true;
     g.add(underStripe);
 
-    // Soffit detail: cool-gray concrete ribs (not wood-brown)
+    // Soffit ribs: flat cool concrete (no wood-grain maps)
     const soffitY = ly - 0.55 - 0.02;
-    const beamMat = pbrFrom(maps.concreteWall, 0.35, width / 4, {
-      color: 0xb4bcc6,
+    const beamMat = new THREE.MeshStandardMaterial({
+      color: 0xa8b2bc,
       roughness: 0.92,
-      metalness: 0.04,
-      envMapIntensity: 0.22,
-      normalScale: new THREE.Vector2(0.7, 0.7),
+      metalness: 0.05,
+      envMapIntensity: 0.2,
     });
     cutawayMats.push(beamMat);
     const nBeams = QUALITY === "low" ? 5 : 7;
@@ -1686,11 +1688,11 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(canopy);
 
     // Canopy soffit ribs + lights (visible when inverted on roof)
-    const canBeamMat = pbrFrom(maps.concreteWall, 0.4, width / 3, {
-      color: 0xb0b8c0,
+    const canBeamMat = new THREE.MeshStandardMaterial({
+      color: 0xaab4be,
       roughness: 0.9,
       metalness: 0.05,
-      envMapIntensity: 0.22,
+      envMapIntensity: 0.2,
     });
     cutawayMats.push(canBeamMat);
     for (let i = 0; i < 5; i++) {
@@ -1748,14 +1750,17 @@ function createDeckSurface(levelIndex, zCenter) {
   });
   cutawayMats.push(pillarMat);
 
-  // Textured curb / rail — matte concrete (never metal/glass)
+  // Matte light concrete curb — zero env reflection so it never reads as glass
   const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 5, 0.5, {
-    color: railTints[levelIndex],
-    metalness: 0.06,
-    roughness: 0.88,
-    envMapIntensity: 0.22,
-    normalScale: new THREE.Vector2(1.2, 1.2),
+    color: 0xc8cdd4,
+    metalness: 0,
+    roughness: 0.95,
+    envMapIntensity: 0,
+    normalScale: new THREE.Vector2(0.8, 0.8),
   });
+  curbMat.transparent = false;
+  curbMat.opacity = 1;
+  curbMat.depthWrite = true;
   // Do NOT put curbMat in cutawayMats — must stay solid opaque
 
   for (const side of [-1, 1]) {
@@ -1771,11 +1776,21 @@ function createDeckSurface(levelIndex, zCenter) {
     // Outer vertical fascia on elevated decks
     if (levelIndex > 0) {
       // Continuous solid side wall — closes gaps that read as "glass decks"
+      const wallMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 1.4, {
+        color: 0xb8c0c8,
+        metalness: 0,
+        roughness: 0.96,
+        envMapIntensity: 0,
+        normalScale: new THREE.Vector2(0.6, 0.6),
+      });
+      wallMat.transparent = false;
+      wallMat.opacity = 1;
+      wallMat.depthWrite = true;
       const sideWall = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 1.45, 0.3),
-        curbMat
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 1.55, 0.42),
+        wallMat
       );
-      sideWall.position.set(0, ly - 0.42, side * (width / 2 + 0.22));
+      sideWall.position.set(0, ly - 0.45, side * (width / 2 + 0.28));
       sideWall.castShadow = true;
       sideWall.receiveShadow = true;
       g.add(sideWall);
@@ -1870,11 +1885,12 @@ function createGroundStrip(zCenter) {
   const g = new THREE.Group();
   // Wide terrain under/beside the corridor so chase-cam never sees empty void
   // Ground well below sidewalk (walk top ≈ 0.14) — no coplanar flicker
+  // Keep ground fill away from sidewalk |z|≈6.55 — leave a clear air gap
   const strips = [
-    { src: maps.gravel, z: -32, depth: 26, color: 0x8a8678, y: -0.22 },
-    { src: maps.dirt, z: 30, depth: 26, color: 0x7a6a55, y: -0.22 },
-    { src: maps.gravel, z: -16, depth: 8, color: 0x8c887c, y: -0.2 },
-    { src: maps.gravel, z: 16, depth: 8, color: 0x8c887c, y: -0.2 },
+    { src: maps.gravel, z: -34, depth: 22, color: 0x8a8678, y: -0.28 },
+    { src: maps.dirt, z: 32, depth: 22, color: 0x7a6a55, y: -0.28 },
+    { src: maps.gravel, z: -18, depth: 6, color: 0x8c887c, y: -0.26 },
+    { src: maps.gravel, z: 18, depth: 6, color: 0x8c887c, y: -0.26 },
   ];
   for (const s of strips) {
     const mat = pbrFrom(s.src, SEGMENT_LEN / 5, s.depth / 4, {
@@ -1885,15 +1901,34 @@ function createGroundStrip(zCenter) {
       normalScale: new THREE.Vector2(1.4, 1.4),
     });
     mat.polygonOffset = true;
-    mat.polygonOffsetFactor = 1;
-    mat.polygonOffsetUnits = 1;
+    mat.polygonOffsetFactor = 2;
+    mat.polygonOffsetUnits = 2;
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.16, s.depth),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.18, s.depth),
       mat
     );
     mesh.position.set(0, s.y, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
+  }
+  // Shoulder below sidewalk (no cobble) so walk edge never shares a plane with ground
+  const shoulderMat = pbrFrom(maps.gravel, SEGMENT_LEN / 5, 1, {
+    color: 0x7a7870,
+    roughness: 0.97,
+    metalness: 0.02,
+    envMapIntensity: 0.1,
+  });
+  shoulderMat.polygonOffset = true;
+  shoulderMat.polygonOffsetFactor = 3;
+  shoulderMat.polygonOffsetUnits = 3;
+  for (const side of [-1, 1]) {
+    const shoulder = new THREE.Mesh(
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.12, 2.2),
+      shoulderMat
+    );
+    shoulder.position.set(0, -0.32, side * 9.2);
+    shoulder.receiveShadow = true;
+    g.add(shoulder);
   }
   // Plaza far from sidewalk (walk at |z|≈6.55) to avoid edge z-fight
   const plazaMat = pbrFrom(maps.cobble, 4, 4, {
@@ -3259,6 +3294,41 @@ function exposeAPI() {
         hasComposer: !!composer,
         hasEnv: !!scene.environment,
         vapor: ud.vaporSprites?.length || 0,
+        modelRotY: ud.model?.rotation.y ?? null,
+        // GLB forward is +Z; after rotY=+π/2 that maps to world +X (travel)
+        noseDir: (() => {
+          if (!ud.model) return null;
+          const tip = new THREE.Vector3(0, 0, 1);
+          ud.model.localToWorld(tip);
+          const o = new THREE.Vector3();
+          ud.model.getWorldPosition(o);
+          tip.sub(o).normalize();
+          return {
+            x: +tip.x.toFixed(3),
+            y: +tip.y.toFixed(3),
+            z: +tip.z.toFixed(3),
+          };
+        })(),
+        thrusterBayX: ud.thrusterBay
+          ? +ud.thrusterBay.getWorldPosition(new THREE.Vector3()).x.toFixed(2)
+          : null,
+        carX: +roadster.position.x.toFixed(2),
+        deckOpaqueSample: (() => {
+          let bad = 0;
+          let total = 0;
+          for (const seg of segments) {
+            seg.traverse((o) => {
+              if (!o.isMesh || !o.material) return;
+              const list = Array.isArray(o.material) ? o.material : [o.material];
+              for (const m of list) {
+                if (!m || m.userData?.forceGlass) continue;
+                total++;
+                if (m.transparent || (m.opacity ?? 1) < 0.99) bad++;
+              }
+            });
+          }
+          return { total, bad };
+        })(),
       };
     },
   };
