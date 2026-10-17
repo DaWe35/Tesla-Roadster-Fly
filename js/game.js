@@ -80,7 +80,13 @@ const isMobile =
 const lowPower =
   matchMedia("(prefers-reduced-motion: reduce)").matches ||
   (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
-let QUALITY = isMobile || lowPower ? "low" : "high";
+const qualityParam = new URLSearchParams(location.search).get("quality");
+let QUALITY =
+  qualityParam === "high" || qualityParam === "low"
+    ? qualityParam
+    : isMobile || lowPower
+      ? "low"
+      : "high";
 let PIXEL_CAP = QUALITY === "low" ? 1.25 : 1.75;
 const SHADOW_MAP = QUALITY === "low" ? 512 : 1024;
 let SHADOW_SOFT = QUALITY === "high";
@@ -102,7 +108,7 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 const FOG_COLOR = 0xb8c9d8;
 scene.background = new THREE.Color(FOG_COLOR);
-scene.fog = new THREE.FogExp2(FOG_COLOR, 0.011);
+scene.fog = new THREE.Fog(FOG_COLOR, 70, 240);
 
 const camera = new THREE.PerspectiveCamera(
   55,
@@ -213,7 +219,7 @@ async function loadWorldTextures() {
 const hemi = new THREE.HemisphereLight(0xd7ecff, 0x5a6358, 0.55);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xfff1d6, 2.35);
+const sun = new THREE.DirectionalLight(0xfff1d6, QUALITY === "high" ? 2.6 : 2.1);
 sun.position.set(-28, 48, 18);
 sun.castShadow = true;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -301,9 +307,13 @@ async function loadEnvironment() {
     const envRT = pmrem.fromEquirectangular(hdr);
     scene.environment = envRT.texture;
     scene.background = envRT.texture;
-    scene.backgroundBlurriness = 0.02;
-    scene.backgroundIntensity = 1.0;
-    scene.fog = new THREE.FogExp2(0xb7c6d4, QUALITY === "low" ? 0.014 : 0.0105);
+    scene.backgroundBlurriness = 0.04;
+    scene.backgroundIntensity = 1.15;
+    scene.fog = new THREE.Fog(
+      0xb7c6d4,
+      QUALITY === "low" ? 55 : 75,
+      QUALITY === "low" ? 180 : 260
+    );
     hdr.dispose();
     pmrem.dispose();
     if (skyDome) {
@@ -352,9 +362,9 @@ function setupComposer() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.32,
-    0.45,
-    0.88
+    0.28,
+    0.4,
+    0.9
   );
   composer.addPass(bloomPass);
   composer.addPass(new OutputPass());
@@ -2357,14 +2367,14 @@ window.addEventListener("resize", () => {
 
 function setupPreview() {
   resetWorld();
-  roadster.position.set(8, 0, 0);
+  roadster.position.set(6, 0, 0);
   state.y = 0;
   state.level = 0;
   state.inverted = false;
   state.roll = 0;
-  camPos.set(2, 3.2, 5.5);
+  camPos.set(2.5, 2.4, 6.2);
   camera.position.copy(camPos);
-  camera.lookAt(8, 0.9, 0);
+  camera.lookAt(6, 0.65, 0);
 }
 
 const clock = new THREE.Clock();
@@ -2528,6 +2538,25 @@ function exposeAPI() {
       }
       renderFrame();
       return window.__ROADSTER__.getState();
+    },
+    /** Diagnostics for load/verify (not part of gameplay contract). */
+    debug() {
+      const ud = roadster.userData;
+      const box = ud.model
+        ? new THREE.Box3().setFromObject(ud.model)
+        : null;
+      const size = box ? box.getSize(new THREE.Vector3()) : null;
+      return {
+        ready: !!ud.ready,
+        wheels: ud.wheels?.length || 0,
+        carClearance: CAR_CLEARANCE,
+        height: ud._height || 0,
+        size: size ? { x: size.x, y: size.y, z: size.z } : null,
+        quality: QUALITY,
+        hasComposer: !!composer,
+        hasEnv: !!scene.environment,
+        vapor: ud.vaporSprites?.length || 0,
+      };
     },
   };
 }
