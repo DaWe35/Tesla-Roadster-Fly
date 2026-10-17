@@ -587,135 +587,95 @@ function makeStarWheel(mats) {
  * Build the Oct 2026 Roadster: ~4.3 m long, ~1.2 m tall, wide stance.
  * Returns { model, wheelNodes }.
  */
+function addBox(parent, mat, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.rotation.set(rx, ry, rz);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
 function buildRoadster2026() {
   const mats = roadsterMats();
   const model = new THREE.Group();
   model.name = "tesla-roadster-2026";
 
-  // Main upper body — long pointed nose, cab-forward greenhouse step, flat rear
-  const upper = extrudeProfile(
-    [
-      [2.15, 0.22],
-      [1.55, 0.38],
-      [0.85, 0.48],
-      [0.35, 0.72],
-      [-0.15, 0.98],
-      [-0.85, 1.02],
-      [-1.45, 0.88],
-      [-1.95, 0.55],
-      [-2.1, 0.28],
-      [-2.1, 0.18],
-      [2.05, 0.18],
-    ],
-    1.85,
-    mats.paint
-  );
-  model.add(upper);
+  // Faceted wedge body from flat panels (Cybertruck / Countach spirit)
+  // Nose tip (pointed)
+  addBox(model, mats.paint, 0.55, 0.16, 0.55, 1.95, 0.28, 0, 0, 0, -0.25);
+  addBox(model, mats.paint, 0.7, 0.18, 1.1, 1.65, 0.32, 0, 0, 0, -0.12);
+  // Hood / front deck (wide flat)
+  addBox(model, mats.paint, 1.1, 0.14, 1.75, 1.0, 0.4, 0, 0, 0, -0.05);
+  // Front fenders (angular shoulders)
+  for (const s of [-1, 1]) {
+    addBox(model, mats.paint, 0.9, 0.22, 0.35, 1.15, 0.42, s * 0.85, 0, s * 0.08, -0.05);
+  }
+  // Cabin belt / waist
+  addBox(model, mats.paint, 1.6, 0.28, 1.9, -0.15, 0.55, 0);
+  // Roof slab (low, flat, cab-forward)
+  addBox(model, mats.paint, 1.15, 0.1, 1.5, -0.45, 0.98, 0);
+  // Rear deck
+  addBox(model, mats.paint, 0.7, 0.16, 1.7, -1.45, 0.58, 0, 0, 0, 0.08);
+  // Rear haunches
+  for (const s of [-1, 1]) {
+    addBox(model, mats.paint, 0.75, 0.28, 0.38, -1.35, 0.52, s * 0.88, 0, -s * 0.06, 0.1);
+  }
+  // Rear fascia
+  addBox(model, mats.paint, 0.2, 0.35, 1.75, -1.95, 0.4, 0);
 
   // Lower black cladding / side skirts full length
-  const skirt = extrudeProfile(
-    [
-      [2.05, 0.05],
-      [2.05, 0.2],
-      [-2.05, 0.2],
-      [-2.05, 0.05],
-    ],
-    1.95,
-    mats.black
-  );
-  model.add(skirt);
-
+  addBox(model, mats.black, 4.0, 0.16, 1.95, 0.0, 0.14, 0);
   // Front splitter
-  const splitter = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 1.9), mats.black);
-  splitter.position.set(2.0, 0.08, 0);
-  splitter.castShadow = true;
-  model.add(splitter);
+  addBox(model, mats.black, 0.4, 0.05, 1.85, 1.95, 0.08, 0);
+  // Rear diffuser
+  addBox(model, mats.black, 0.55, 0.14, 1.65, -1.95, 0.12, 0);
 
-  // Rear diffuser slab (visible from behind)
-  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 1.7), mats.black);
-  diffuser.position.set(-1.95, 0.12, 0);
-  diffuser.castShadow = true;
-  model.add(diffuser);
-
-  // Wraparound canopy / windscreen
-  const canopy = extrudeProfile(
-    [
-      [0.45, 0.7],
-      [0.05, 1.0],
-      [-0.75, 1.05],
-      [-1.25, 0.92],
-      [-1.15, 0.72],
-      [0.35, 0.68],
-    ],
-    1.55,
-    mats.glass
-  );
-  canopy.position.y = 0.02;
-  model.add(canopy);
-
-  // Angular side windows (flat panes)
-  for (const side of [-1, 1]) {
-    const pane = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.32, 0.04), mats.glass);
-    pane.position.set(-0.35, 0.82, side * 0.94);
-    pane.rotation.y = side * 0.04;
-    model.add(pane);
+  // Wraparound windscreen (angled flat pane)
+  addBox(model, mats.glass, 0.7, 0.42, 1.55, 0.35, 0.78, 0, 0, 0, -0.55);
+  // Roof glass
+  addBox(model, mats.glass, 0.9, 0.06, 1.4, -0.4, 1.02, 0);
+  // Angular side windows
+  for (const s of [-1, 1]) {
+    addBox(model, mats.glass, 0.85, 0.28, 0.05, -0.35, 0.8, s * 0.96, 0, s * 0.05, 0);
   }
-
-  // Sharp C-pillar (body colour)
-  for (const side of [-1, 1]) {
-    const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.45, 0.08), mats.paint);
-    pillar.position.set(-1.15, 0.78, side * 0.9);
-    pillar.rotation.z = 0.35;
-    pillar.castShadow = true;
-    model.add(pillar);
+  // Sharp C-pillars
+  for (const s of [-1, 1]) {
+    addBox(model, mats.paint, 0.4, 0.42, 0.1, -1.05, 0.82, s * 0.92, 0, 0, 0.4);
   }
 
   // Full-width thin front LED bar + corner headlights
-  const frontBar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, 1.7), mats.ledWhite);
-  frontBar.position.set(2.12, 0.36, 0);
-  model.add(frontBar);
-  for (const side of [-1, 1]) {
-    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.14), mats.ledWhite);
-    hl.position.set(2.08, 0.34, side * 0.85);
-    model.add(hl);
+  addBox(model, mats.ledWhite, 0.06, 0.045, 1.7, 2.12, 0.34, 0);
+  for (const s of [-1, 1]) {
+    addBox(model, mats.ledWhite, 0.08, 0.07, 0.16, 2.05, 0.32, s * 0.88);
   }
 
-  // Full-width thin red tail bar (under wing)
-  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.04, 1.65), mats.ledRed);
-  tailBar.position.set(-2.08, 0.48, 0);
-  model.add(tailBar);
+  // Full-width thin red tail bar under wing
+  addBox(model, mats.ledRed, 0.05, 0.045, 1.7, -2.05, 0.5, 0);
 
   // Tall rear wing on struts, body colour, slight upward tilt
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.06, 1.85), mats.paint);
-  wing.position.set(-1.85, 1.12, 0);
-  wing.rotation.z = -0.12;
-  wing.castShadow = true;
-  model.add(wing);
-  for (const side of [-1, 1]) {
-    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.05), mats.paint);
-    strut.position.set(-1.75, 0.88, side * 0.55);
-    strut.castShadow = true;
-    model.add(strut);
+  addBox(model, mats.paint, 0.6, 0.07, 1.9, -1.8, 1.15, 0, 0, 0, -0.14);
+  for (const s of [-1, 1]) {
+    addBox(model, mats.paint, 0.07, 0.48, 0.06, -1.7, 0.88, s * 0.58);
   }
 
-  // Tesla T badge (simple extruded T) on nose
-  const tStem = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.14, 0.03), mats.black);
-  tStem.position.set(2.05, 0.5, 0);
-  model.add(tStem);
-  const tBar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.16), mats.black);
-  tBar.position.set(2.05, 0.56, 0);
-  model.add(tBar);
+  // Tesla T on nose
+  addBox(model, mats.black, 0.04, 0.14, 0.03, 2.0, 0.48, 0);
+  addBox(model, mats.black, 0.04, 0.04, 0.16, 2.0, 0.54, 0);
 
-  // Small rear plate area
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 0.32), mats.black);
-  plate.position.set(-2.12, 0.32, 0);
-  model.add(plate);
-  const plateFace = new THREE.Mesh(
-    new THREE.BoxGeometry(0.01, 0.1, 0.28),
-    new THREE.MeshStandardMaterial({ color: 0xd8dde4, roughness: 0.7 })
+  // Small rear plate
+  addBox(model, mats.black, 0.04, 0.12, 0.32, -2.1, 0.3, 0);
+  addBox(
+    model,
+    new THREE.MeshStandardMaterial({ color: 0xd8dde4, roughness: 0.7 }),
+    0.01,
+    0.1,
+    0.28,
+    -2.13,
+    0.3,
+    0
   );
-  plateFace.position.set(-2.145, 0.32, 0);
-  model.add(plateFace);
 
   // Wheels — black 6-spoke over light aero discs; low-profile tires
   const wheelNodes = [];
@@ -844,7 +804,7 @@ function createEmptyThrusterData(body) {
     group.position.copy(nozzles[i].position);
     group.position.y -= 0.12;
     const core = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.035, 0.055, 0.85, 8, 1, true),
+      new THREE.CylinderGeometry(0.04, 0.07, 0.95, 8, 1, true),
       new THREE.MeshBasicMaterial({
         color: 0xffffff,
         transparent: true,
@@ -853,11 +813,25 @@ function createEmptyThrusterData(body) {
         blending: THREE.NormalBlending,
       })
     );
-    core.position.y = -0.4;
+    // Inner denser shaft
+    const inner = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.038, 0.95, 6, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+      })
+    );
+    core.position.y = -0.45;
+    inner.position.y = -0.45;
     group.add(core);
+    group.add(inner);
+    group.userData.inner = inner;
     group.visible = false;
     thrusterBay.add(group);
-    plumes.push({ group, core, tip: tipGlows[i] });
+    plumes.push({ group, core, inner, tip: tipGlows[i] });
   }
 
   // Soft volumetric sprite pool: 0=jet puff, 1=ground cloud, 2=trail, 3=side puff
@@ -1882,12 +1856,12 @@ function createDeckSurface(levelIndex, zCenter) {
     // All Ys distinct from road top (ly+0.02) and from ground strips (y≤−0.3).
     // UV scale ≈ real-world: cobble ~0.2 m tiles, concrete panels ~1 m.
     const roadHalf = width / 2; // 5.0
-    const curbW = 0.22;
-    const walkW = 2.0;
-    const apronW = 1.6;
-    const curbTop = ly + 0.22;
-    const walkTop = ly + 0.18;
-    const apronTop = ly - 0.02;
+    const curbW = 0.28;
+    const walkW = 2.2;
+    const apronW = 1.8;
+    const curbTop = ly + 0.32; // clearly raised vertical face above road
+    const walkTop = ly + 0.26;
+    const apronTop = ly + 0.02;
 
     const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 4, 0.5, {
       color: 0xc2c0ba,
@@ -1974,29 +1948,34 @@ function createDeckSurface(levelIndex, zCenter) {
         g.add(pot);
       }
 
-      // Low shop frontage wall beyond apron (not in cutawayMats — stays solid)
-      const frontZ = roadHalf + curbW + walkW + apronW + 0.35;
-      const storeMat = pbrFrom(maps.brick, 2.5, 2.0, {
-        color: 0xa89888,
-        roughness: 0.85,
-        metalness: 0.05,
-        envMapIntensity: 0.25,
+      // Continuous shop frontage wall beyond apron (solid, not cutaway)
+      const frontZ = roadHalf + curbW + walkW + apronW + 0.4;
+      const storeMat = pbrFrom(maps.brick, SEGMENT_LEN / 3, 2.5, {
+        color: 0xa09080,
+        roughness: 0.86,
+        metalness: 0.04,
+        envMapIntensity: 0.22,
       });
-      for (let i = 0; i < 3; i++) {
-        const storeW = 6.5;
-        const storeH = 2.4 + (i % 2) * 0.8;
-        const store = new THREE.Mesh(
-          new THREE.BoxGeometry(storeW, storeH, 0.7),
-          storeMat
-        );
-        store.position.set(
-          -SEGMENT_LEN / 2 + 5 + i * 9,
-          storeH / 2,
-          s * frontZ
-        );
-        store.castShadow = true;
-        store.receiveShadow = true;
-        g.add(store);
+      const store = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
+        storeMat
+      );
+      store.position.set(0, 1.6, s * frontZ);
+      store.castShadow = true;
+      store.receiveShadow = true;
+      g.add(store);
+      // Simple door/window recesses
+      const winMat = new THREE.MeshStandardMaterial({
+        color: 0x1a2838,
+        emissive: 0x3a6090,
+        emissiveIntensity: 0.35,
+        roughness: 0.3,
+        metalness: 0.2,
+      });
+      for (let i = 0; i < 4; i++) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 0.08), winMat);
+        win.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, 1.5, s * (frontZ - s * 0.44));
+        g.add(win);
       }
     }
   }
@@ -2009,27 +1988,22 @@ function createDeckSurface(levelIndex, zCenter) {
 
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
-  // Street apron ends ~|z|=8.8. Ground fill starts beyond |z|≥10, well BELOW apron (y≤−0.35).
-  // Fine asphalt near camera (not giant gravel noise). Coarse fill only far out.
+  // ONLY far fill — never under the chase-cam foreground or street edge.
+  // Street stack owns |z|≲10 (road/curb/walk/apron/shops). Camera sits ~z=−13.
   const strips = [
-    // Camera-side corridor: fine asphalt, scaled ~1.5 m tiles
-    { src: maps.asphalt, z: -14, depth: 8, color: 0x7a7e86, y: -0.38, rx: SEGMENT_LEN / 1.5, ry: 8 / 1.5 },
-    // Far camera-side fill
-    { src: maps.gravel, z: -28, depth: 16, color: 0x8a8678, y: -0.4, rx: SEGMENT_LEN / 1.2, ry: 16 / 1.2 },
-    // Far side of track
-    { src: maps.asphalt, z: 14, depth: 8, color: 0x7a7e86, y: -0.38, rx: SEGMENT_LEN / 1.5, ry: 8 / 1.5 },
-    { src: maps.dirt, z: 28, depth: 16, color: 0x7a6a55, y: -0.4, rx: SEGMENT_LEN / 1.2, ry: 16 / 1.2 },
+    { src: maps.asphalt, z: -24, depth: 12, color: 0x6a6e74, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
+    { src: maps.dirt, z: 24, depth: 12, color: 0x6e5e4a, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
   ];
   for (const s of strips) {
     const mat = pbrFrom(s.src, s.rx, s.ry, {
       color: s.color,
-      roughness: 0.95,
+      roughness: 0.96,
       metalness: 0.02,
-      envMapIntensity: 0.12,
-      normalScale: new THREE.Vector2(1.0, 1.0),
+      envMapIntensity: 0.1,
+      normalScale: new THREE.Vector2(0.8, 0.8),
     });
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.16, s.depth),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.14, s.depth),
       mat
     );
     mesh.position.set(0, s.y, s.z);
@@ -2116,28 +2090,25 @@ function createCityBlock(zCenter) {
   return g;
 }
 
-/** Continuous scrolling ground that tracks the car along X.
- *  Must NOT cover the street edge (curb/sidewalk/apron ~|z|<9) — that caused
- *  the giant gravel foreground + curb z-fighting. */
+/** Far scrolling fill only — never enters chase-cam foreground (|z|<18). */
 let terrainFollow = null;
 function ensureTerrainFollow() {
   if (terrainFollow) return terrainFollow;
   const g = new THREE.Group();
-  // Far fill only — fine UV (~1.2 m tiles), deep below street (y=−0.55)
   const slabs = [
-    { src: maps.asphalt, z: -26, w: 100, d: 28, color: 0x6e7278 },
-    { src: maps.dirt, z: 26, w: 100, d: 28, color: 0x6e5e4a },
+    { src: maps.asphalt, z: -36, w: 110, d: 20, color: 0x5e6268 },
+    { src: maps.dirt, z: 36, w: 110, d: 20, color: 0x5e5040 },
   ];
   for (const s of slabs) {
-    const mat = pbrFrom(s.src, s.w / 1.2, s.d / 1.2, {
+    const mat = pbrFrom(s.src, s.w / 1.0, s.d / 1.0, {
       color: s.color,
-      roughness: 0.96,
+      roughness: 0.97,
       metalness: 0.02,
-      envMapIntensity: 0.1,
-      normalScale: new THREE.Vector2(1.0, 1.0),
+      envMapIntensity: 0.08,
+      normalScale: new THREE.Vector2(0.7, 0.7),
     });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.12, s.d), mat);
-    mesh.position.set(0, -0.55, s.z);
+    mesh.position.set(0, -0.65, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
   }
@@ -2765,15 +2736,18 @@ function updateThrusters(dt) {
   }
 
   // Dense white jet columns (opaque shafts)
-  const colLen = 0.55 + lvl * 0.55;
+  const colLen = 0.65 + lvl * 0.7;
   ud.plumes.forEach((p) => {
     p.group.visible = active;
     if (p.core) {
-      p.core.scale.set(1, colLen / 0.85, 1);
+      p.core.scale.set(1, colLen / 0.95, 1);
       p.core.position.y = -colLen * 0.5;
-      if (p.core.material) {
-        p.core.material.opacity = active ? 0.72 + lvl * 0.28 : 0;
-      }
+      if (p.core.material) p.core.material.opacity = active ? 0.85 + lvl * 0.15 : 0;
+    }
+    if (p.inner) {
+      p.inner.scale.set(1, colLen / 0.95, 1);
+      p.inner.position.y = -colLen * 0.5;
+      if (p.inner.material) p.inner.material.opacity = active ? 0.95 : 0;
     }
   });
 
@@ -2810,27 +2784,27 @@ function updateThrusters(dt) {
     const nearSurf =
       Math.abs(roadster.position.y - (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))) < 1.6;
     if (nearSurf || sustain || burst) {
-      const cloudN = burst ? (QUALITY === "low" ? 2 : 4) : sustain ? 2 : 1;
+      const cloudN = burst ? (QUALITY === "low" ? 3 : 5) : sustain ? 3 : 2;
       for (let s = 0; s < cloudN; s++) {
         const nz = ud.nozzles[s % ud.nozzles.length];
         nz.getWorldPosition(_origin);
         // Project onto surface along belly, then spread sideways
-        const px = _origin.x + (Math.random() - 0.5) * 0.5 + _fwd.x * 0.2;
-        const pz = _origin.z + (Math.random() - 0.5) * 0.9;
-        const py = impactY + (Math.random() - 0.5) * 0.06;
-        const spread = 1.2 + lvl * 1.8;
+        const px = _origin.x + (Math.random() - 0.5) * 0.6 + _fwd.x * 0.15;
+        const pz = _origin.z + (Math.random() - 0.5) * 1.1;
+        const py = impactY + (Math.random() - 0.5) * 0.05;
+        const spread = 1.6 + lvl * 2.2;
         spawnVaporAt(
           ud,
           1,
           px,
           py,
           pz,
-          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.35,
-          (Math.random() - 0.5) * 0.15,
-          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.35,
-          0.55 + lvl * 0.7,
-          0.7 + Math.random() * 0.55,
-          0.85
+          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.3,
+          (Math.random() - 0.5) * 0.1,
+          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.3,
+          0.7 + lvl * 0.9,
+          0.85 + Math.random() * 0.6,
+          0.92
         );
       }
     }
@@ -3297,9 +3271,9 @@ function animate() {
     updateTrains(dt);
     pruneWorld(roadster.position.x);
     updateParticles(dt);
-    updateCamera(dt);
+    if (!window.__ROADSTER__?.cameraLocked) updateCamera(dt);
     updateHUD();
-  } else if (!state.dead) {
+  } else if (!state.dead && !window.__ROADSTER__?.cameraLocked) {
     previewAngle += dt * 0.25;
     roadster.position.set(6, 0, 0);
     roadster.userData.body.rotation.y = Math.sin(previewAngle) * 0.15;
@@ -3335,6 +3309,19 @@ animate();
 function exposeAPI() {
   window.__ROADSTER__ = {
     startGame,
+    /** Place chase camera for screenshot close-ups (diagnosis only). */
+    cameraLocked: false,
+    setCameraLook(ox, oy, oz, lx, ly, lz) {
+      window.__ROADSTER__.cameraLocked = true;
+      camera.position.set(ox, oy, oz);
+      camPos.copy(camera.position);
+      camera.lookAt(lx, ly, lz);
+      camera.updateProjectionMatrix();
+      renderFrame();
+    },
+    unlockCamera() {
+      window.__ROADSTER__.cameraLocked = false;
+    },
     getState: () => ({
       running: state.running,
       dead: state.dead,
