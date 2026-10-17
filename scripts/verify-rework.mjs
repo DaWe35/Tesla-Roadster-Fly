@@ -187,12 +187,100 @@ async function runViewport(w, h, prefix) {
   console.log(prefix, "gap", { ok: plan.ok, errors: plan.errors?.slice(0, 3) });
   if (!plan.ok) throw new Error("validateGapPlan failed: " + plan.errors.slice(0, 5).join("; "));
 
+  // Camera peek on a fresh page so the long drive can't stall later checks
+  {
+    const peekPage = await browser.newPage();
+    await peekPage.setViewport({ width: w, height: h });
+    await peekPage.goto(`http://127.0.0.1:8103/?autostart&v=${Date.now()}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await peekPage.waitForFunction(() => window.__ROADSTER__?.setupCamPeekTest, {
+      timeout: 90000,
+    });
+    const peek = await peekPage.evaluate(() => {
+      const R = window.__ROADSTER__;
+      R.simulating = true;
+      const setup = R.setupCamPeekTest(0, false);
+      const sample = () => {
+        const st = R.getState();
+        return {
+          camY: st.camY,
+          camX: st.camX,
+          peek: st.camPeek,
+          x: st.x,
+          y: st.y,
+          relY: st.camY - st.y,
+          relX: st.camX - st.x,
+        };
+      };
+      const baseline = sample();
+      let mid = null;
+      let after = null;
+      let hopped = false;
+      let dead = false;
+      for (let i = 0; i < 360; i++) {
+        const st0 = R.getState();
+        if (!hopped && mid && st0.x > setup.gapStart - 10) {
+          R.pressUp();
+          hopped = true;
+        }
+        R.simulate(1 / 60, { render: false });
+        const s = sample();
+        if (R.getState().dead) {
+          dead = true;
+          break;
+        }
+        if (!mid && s.peek > 0.85 && s.relY > baseline.relY + 2.0) mid = { ...s, i };
+        if (mid && s.x > setup.gapStart + 36 && s.peek < 0.2) {
+          after = { ...s, i };
+          break;
+        }
+      }
+      if (!after) after = { ...sample(), i: -1 };
+      R.simulating = false;
+      return { setup, baseline, mid, after, hopped, dead };
+    });
+    await peekPage.close();
+    console.log(prefix, "cam-peek", {
+      gapX: peek.setup?.gapX,
+      baseRelY: peek.baseline?.relY,
+      midRelY: peek.mid?.relY,
+      midPeek: peek.mid?.peek,
+      midRelX: peek.mid?.relX,
+      afterRelY: peek.after?.relY,
+      afterPeek: peek.after?.peek,
+      hopped: peek.hopped,
+      dead: peek.dead,
+    });
+    if (!peek.mid) throw new Error("camera peek never rose before gap");
+    if (!(peek.mid.relY > peek.baseline.relY + 1.8)) {
+      throw new Error(
+        `peek cam did not rise enough (relY ${peek.baseline.relY} → ${peek.mid.relY})`
+      );
+    }
+    if (!(peek.mid.relX < peek.baseline.relX - 1.2)) {
+      throw new Error(
+        `peek cam did not pull back (relX ${peek.baseline.relX} → ${peek.mid.relX})`
+      );
+    }
+    if (!(peek.after.peek < 0.25)) {
+      throw new Error(
+        "camera peek did not return after gap (peek=" + peek.after.peek + ")"
+      );
+    }
+    if (!(peek.after.relY < peek.mid.relY - 1.2)) {
+      throw new Error(
+        `peek cam did not ease back (relY ${peek.mid.relY} → ${peek.after.relY})`
+      );
+    }
+  }
+
   // Early obstacles: after brief sim, world should have barriers ahead
-  const early = await page.evaluate(() => {
-    window.__ROADSTER__.startGame();
-    window.__ROADSTER__.simulate(2.5);
-    return window.__ROADSTER__.getState();
-  });
+  await page.evaluate(() => window.__ROADSTER__.startGame());
+  for (let i = 0; i < 5; i++) {
+    await page.evaluate(() => window.__ROADSTER__.simulate(0.5));
+  }
+  const early = await page.evaluate(() => window.__ROADSTER__.getState());
   console.log(prefix, "early state", early.time, early.dead, early.reason);
   await shot("01_early_play");
 

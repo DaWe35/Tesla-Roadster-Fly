@@ -118,6 +118,13 @@ const camera = new THREE.PerspectiveCamera(
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 6, -10);
 
+/* ── Camera peek (brief raise/pull-back before support gaps) ─ */
+const PEEK_LEAD_SEC = 1.75; // start rising ~1.5–2 s before the gap
+const PEEK_HOLD_PAST_SEC = 0.4; // linger just past the gap end
+const PEEK_MERGE_SEC = 2.4; // treat nearby gaps as one peek window
+let camPeek = 0; // 0 = default chase, 1 = full peek
+let camPeekWindow = null; // { startX, endX, gapStart, gapEnd, level }
+
 /* ── Loading UI ───────────────────────────────────────────── */
 let assetsReady = false;
 let readyResolve = null;
@@ -3054,36 +3061,136 @@ function updateBuildingCutaway() {
   }
 }
 
+/**
+ * Deck level in columnGapPlan that the car needs for support right now.
+ * Upright → current floor. Inverted → ceiling deck (level above, or same on roof).
+ */
+function supportGapLevel() {
+  if (state.inverted) {
+    return state.level < LEVELS.length - 1 ? state.level + 1 : state.level;
+  }
+  return state.level;
+}
+
+/**
+ * Next peek window from gap planner: lead-in before the first threatening gap,
+ * merged through any nearby follow-on gaps so peeks don't chatter.
+ */
+function findCamPeekWindow(carX, speed) {
+  const li = supportGapLevel();
+  const spd = Math.max(speed, state.baseSpeed * 0.85, 6);
+  const leadDist = spd * PEEK_LEAD_SEC;
+  const mergeDist = spd * PEEK_MERGE_SEC;
+  const holdPast = spd * PEEK_HOLD_PAST_SEC;
+
+  const indices = [...columnGapPlan.keys()].sort((a, b) => a - b);
+  let clusterStart = null;
+  let clusterEnd = null;
+  let firstGapStart = null;
+
+  for (const idx of indices) {
+    const gaps = columnGapPlan.get(idx);
+    if (!gaps || !gaps[li]) continue;
+    const cx = idx * SEGMENT_LEN;
+    const gapStart = cx - SEGMENT_LEN / 2;
+    const gapEnd = cx + SEGMENT_LEN / 2;
+    if (gapEnd < carX - 1.5) continue; // fully behind
+
+    if (clusterStart === null) {
+      // Only arm once the lead-in is near; ignore far-future gaps
+      if (gapStart - carX > leadDist + SEGMENT_LEN * 1.25) break;
+      clusterStart = gapStart - leadDist;
+      clusterEnd = gapEnd + holdPast;
+      firstGapStart = gapStart;
+    } else if (gapStart - (clusterEnd - holdPast) <= mergeDist) {
+      clusterEnd = gapEnd + holdPast;
+    } else {
+      break;
+    }
+  }
+
+  if (clusterStart === null) return null;
+  return {
+    startX: clusterStart,
+    endX: clusterEnd,
+    gapStart: firstGapStart,
+    level: li,
+  };
+}
+
+function updateCamPeek(dt) {
+  if (!state.running || state.dead) {
+    camPeekWindow = null;
+    camPeek = THREE.MathUtils.lerp(camPeek, 0, 1 - Math.pow(0.02, dt));
+    return;
+  }
+
+  camPeekWindow = findCamPeekWindow(roadster.position.x, state.speed);
+  let want = 0;
+  if (camPeekWindow) {
+    const x = roadster.position.x;
+    if (x >= camPeekWindow.startX && x <= camPeekWindow.endX) want = 1;
+  }
+
+  // Smooth ease toward peek / back to default — quick rise, soft landing
+  const toward = want > camPeek + 0.01;
+  const follow = toward ? 0.0008 : 0.018;
+  camPeek = THREE.MathUtils.lerp(camPeek, want, 1 - Math.pow(follow, dt));
+  if (camPeek < 0.001) camPeek = 0;
+  if (camPeek > 0.999 && want === 1) camPeek = 1;
+}
+
 function updateCamera(dt) {
   // Subway Surfers–style chase: directly behind the car, centered on the lane,
   // slightly above (or below when inverted), looking ahead. Car fills lower-middle.
+  // Optional peek: briefly raise + pull back when a support-surface gap approaches.
+  updateCamPeek(dt);
+
   const portrait = camera.aspect < 0.9;
   const baseFov = portrait ? 54 : 48;
   const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.4;
-  camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
+  const p = camPeek * camPeek * (3 - 2 * camPeek); // smoothstep
+  const peekFov = portrait ? 9 : 7;
+  camera.fov = THREE.MathUtils.lerp(
+    camera.fov,
+    speedFov + peekFov * p,
+    1 - Math.pow(0.05, dt)
+  );
   camera.updateProjectionMatrix();
 
   // Subway Surfers: camera sits on the lane centerline, close behind the car
   // so the Roadster fills the lower-middle of the frame (not a side vista).
-  const backX = portrait ? -7.0 : -5.4;
+  let backX = portrait ? -7.0 : -5.4;
   const sideZ = 0;
   const inv = state.inverted || state.flipping;
-  const desiredY = inv
+  let desiredY = inv
     ? state.y - (portrait ? 1.45 : 1.15)
     : state.y + (portrait ? 1.85 : 1.55);
+
+  // Peek: pull back and raise (or drop when inverted) to read other levels ahead.
+  // Keep the car in the lower frame while clearing the near deck edge.
+  const peekBack = portrait ? 3.4 : 2.8;
+  const peekRaise = portrait ? 4.2 : 3.6;
+  backX -= peekBack * p;
+  if (inv) desiredY -= peekRaise * p;
+  else desiredY += peekRaise * p;
+
   const desired = new THREE.Vector3(
     roadster.position.x + backX,
     desiredY,
     roadster.position.z + sideZ
   );
-  const camFollow = inv ? 0.03 : 0.12;
+  // Snappier while peeking so the rise/pull-back reads clearly on mobile
+  const camFollow = p > 0.15 ? 0.01 : inv ? 0.03 : 0.12;
   camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
-  camTarget.set(
-    roadster.position.x + (portrait ? 8 : 7),
-    state.y + (inv ? -0.12 : 0.28),
-    roadster.position.z
-  );
+
+  const lookAhead = (portrait ? 8.5 : 7.5) + 1.8 * p;
+  let lookY = state.y + (inv ? -0.12 : 0.28);
+  // Aim peek look toward mid-stack so pavement on other levels is readable
+  if (inv) lookY -= (portrait ? 3.0 : 2.5) * p;
+  else lookY += (portrait ? 3.4 : 2.9) * p;
+  camTarget.set(roadster.position.x + lookAhead, lookY, roadster.position.z);
   camera.lookAt(camTarget);
 
   sun.target.position.copy(roadster.position);
@@ -3125,6 +3232,8 @@ function die(reason) {
   state.dead = true;
   state.running = false;
   state.reason = reason;
+  camPeek = 0;
+  camPeekWindow = null;
   if (state.time > bestTime) {
     bestTime = state.time;
     try {
@@ -3184,6 +3293,8 @@ function startGame() {
     camera.position.copy(camPos);
     camera.fov = 48;
     camera.updateProjectionMatrix();
+    camPeek = 0;
+    camPeekWindow = null;
 
     resetWorld();
     updateHUD();
@@ -3315,6 +3426,12 @@ function renderFrame() {
 
 function animate() {
   requestAnimationFrame(animate);
+  // Deterministic simulate() owns the clock; skip the live tick so tests
+  // don't double-step the world or fight the chase camera.
+  if (window.__ROADSTER__?.simulating) {
+    renderFrame();
+    return;
+  }
   const dt = Math.min(clock.getDelta(), 0.05);
   if (dt > 0) {
     const fps = 1 / dt;
@@ -3375,6 +3492,8 @@ function exposeAPI() {
     startGame,
     /** Place chase camera for screenshot close-ups (diagnosis only). */
     cameraLocked: false,
+    /** When true, animate() only renders — simulate() owns updates. */
+    simulating: false,
     setCameraLook(ox, oy, oz, lx, ly, lz) {
       window.__ROADSTER__.cameraLocked = true;
       camera.position.set(ox, oy, oz);
@@ -3406,7 +3525,80 @@ function exposeAPI() {
       thrustLevel: roadster.userData.thrustLevel || 0,
       thrustHold: roadster.userData.thrustHold || 0,
       thrustVisible: anyThrustVisible(),
+      camPeek,
+      camY: camera.position.y,
+      camX: camera.position.x,
     }),
+    /** Peek test helper: place car before a support-surface gap with invuln. */
+    setupCamPeekTest(level = 0, inverted = false) {
+      this.startGame();
+      this.extendPlan(28);
+      this.setLevel(level, inverted);
+      state.invuln = 120;
+      state.speed = state.baseSpeed;
+      const li = inverted
+        ? level < LEVELS.length - 1
+          ? level + 1
+          : level
+        : level;
+      // Prefer a nearby planned gap; otherwise force one so the peek window is short
+      const indices = [...columnGapPlan.keys()].sort((a, b) => a - b);
+      let gapIdx = null;
+      for (const idx of indices) {
+        if (idx < 4 || idx > 12) continue;
+        const gaps = columnGapPlan.get(idx);
+        if (gaps?.[li]) {
+          gapIdx = idx;
+          break;
+        }
+      }
+      if (gapIdx === null) {
+        gapIdx = 7;
+        const forced = [false, false, false];
+        forced[li] = true;
+        columnGapPlan.set(gapIdx, forced);
+        const xCenter = gapIdx * SEGMENT_LEN;
+        for (let i = segments.length - 1; i >= 0; i--) {
+          const s = segments[i];
+          if (s.userData.levelIndex === li && Math.abs(s.position.x - xCenter) < 1) {
+            worldRoot.remove(s);
+            segments.splice(i, 1);
+          }
+        }
+        const marker = new THREE.Group();
+        marker.position.set(xCenter, 0, 0);
+        marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
+        worldRoot.add(marker);
+        segments.push(marker);
+      }
+      const gapStart = gapIdx * SEGMENT_LEN - SEGMENT_LEN / 2;
+      const lead = state.speed * PEEK_LEAD_SEC;
+      roadster.position.x = gapStart - lead - 4;
+      roadster.position.y = surfaceY(level, inverted);
+      state.y = roadster.position.y;
+      camPeek = 0;
+      camPeekWindow = null;
+      // Snap to default chase framing (avoid startGame cam lerp fighting the peek test)
+      const backX = -5.4;
+      const defY = inverted ? state.y - 1.15 : state.y + 1.55;
+      camPos.set(roadster.position.x + backX, defY, 0);
+      camera.position.copy(camPos);
+      camera.fov = 48;
+      camera.updateProjectionMatrix();
+      camTarget.set(roadster.position.x + 7, state.y + (inverted ? -0.12 : 0.28), 0);
+      camera.lookAt(camTarget);
+      renderFrame();
+      return {
+        gapIdx,
+        gapX: gapIdx * SEGMENT_LEN,
+        gapStart,
+        carX: roadster.position.x,
+        supportLevel: li,
+        camY: camera.position.y,
+        camX: camera.position.x,
+        camPeek,
+      };
+    },
     pressUp: () => {
       input.up = true;
     },
@@ -3446,20 +3638,28 @@ function exposeAPI() {
       updateDeckCutaway();
       updateBuildingCutaway();
     },
-    simulate(seconds) {
+    simulate(seconds, opts = {}) {
       const step = 1 / 60;
       const frames = Math.max(1, Math.floor(seconds / step));
-      for (let i = 0; i < frames; i++) {
-        if (!state.running) break;
-        state.time += step;
-        updatePlayer(step);
-        updateTrains(step);
-        pruneWorld(roadster.position.x);
-        updateParticles(step);
-        if (!window.__ROADSTER__?.cameraLocked) updateCamera(step);
-        updateHUD();
+      const doRender = opts.render !== false;
+      const wasSim = !!window.__ROADSTER__.simulating;
+      window.__ROADSTER__.simulating = true;
+      if (!wasSim) clock.getDelta(); // drop real-time delta so resume doesn't hitch
+      try {
+        for (let i = 0; i < frames; i++) {
+          if (!state.running) break;
+          state.time += step;
+          updatePlayer(step);
+          updateTrains(step);
+          pruneWorld(roadster.position.x);
+          updateParticles(step);
+          if (!window.__ROADSTER__?.cameraLocked) updateCamera(step);
+          updateHUD();
+        }
+        if (doRender) renderFrame();
+      } finally {
+        if (!wasSim) window.__ROADSTER__.simulating = false;
       }
-      renderFrame();
       return window.__ROADSTER__.getState();
     },
     /** Diagnostics for load/verify (not part of gameplay contract). */
