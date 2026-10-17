@@ -1830,12 +1830,12 @@ function createDeckSurface(levelIndex, zCenter) {
       metalness: 0.05,
       envMapIntensity: 0.22,
     });
-    const walkH = 0.26;
-    const walkTop = ly + 0.14;
-    const walkZ = 6.55; // clear of road curb (|z|=5) and ground fill
+    const walkH = 0.28;
+    const walkTop = ly + 0.2;
+    const walkZ = 6.7; // clear of road curb (|z|=5) and ground shoulder (~9.2)
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.55),
+        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.4),
         walkMat
       );
       walk.position.set(0, walkTop - walkH / 2, side * walkZ);
