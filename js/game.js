@@ -810,7 +810,7 @@ function createEmptyThrusterData(body) {
   }
 
   // Soft volumetric sprite pool: 0=jet shaft, 1=ground cloud, 2=trail, 3=side puff
-  const vaporCount = QUALITY === "low" ? 128 : 220;
+  const vaporCount = QUALITY === "low" ? 96 : 160;
   const vaporSprites = [];
   const vaporLife = new Float32Array(vaporCount);
   const vaporMax = new Float32Array(vaporCount);
@@ -2812,7 +2812,7 @@ function updateThrusters(dt) {
     const sustain = state.inverted && state.running && !state.dead;
 
     // Dense opaque white shaft sprites along each nozzle — thick, not thin cylinders
-    const shaftPerNozzle = burst ? (QUALITY === "low" ? 5 : 8) : sustain ? 5 : 3;
+    const shaftPerNozzle = burst ? (QUALITY === "low" ? 4 : 6) : sustain ? 4 : 3;
     for (let n = 0; n < ud.nozzles.length; n++) {
       const nz = ud.nozzles[n];
       nz.getWorldPosition(_origin);
@@ -2821,24 +2821,24 @@ function updateThrusters(dt) {
         const px = _origin.x + _belly.x * along;
         const py = _origin.y + _belly.y * along;
         const pz = _origin.z + _belly.z * along;
-        const widen = 0.38 + (s / shaftPerNozzle) * 0.42 + lvl * 0.2;
+        const widen = 0.32 + (s / shaftPerNozzle) * 0.35 + lvl * 0.15;
         spawnVaporAt(
           ud,
           0,
-          px + (Math.random() - 0.5) * 0.05,
+          px + (Math.random() - 0.5) * 0.04,
           py,
-          pz + (Math.random() - 0.5) * 0.05,
-          _belly.x * (1.8 + lvl) + _fwd.x * state.speed * 0.12,
-          _belly.y * (1.8 + lvl),
-          _belly.z * (1.8 + lvl),
+          pz + (Math.random() - 0.5) * 0.04,
+          _belly.x * (1.6 + lvl) + _fwd.x * state.speed * 0.1,
+          _belly.y * (1.6 + lvl),
+          _belly.z * (1.6 + lvl),
           widen,
-          0.14 + Math.random() * 0.08,
-          1.0
+          0.12 + Math.random() * 0.07,
+          0.95
         );
       }
     }
 
-    // Much bigger rolling ground / ceiling impact cloud
+    // Rolling ground / ceiling impact cloud — big, but not a full white-out
     const impactY = state.inverted
       ? ceilingY(state.level) - 0.06
       : floorY(state.level) + 0.05;
@@ -2848,49 +2848,50 @@ function updateThrusters(dt) {
           (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))
       ) < 2.2;
     if (nearSurf || sustain || burst) {
-      const cloudN = burst ? (QUALITY === "low" ? 8 : 14) : sustain ? 8 : 5;
+      const cloudN = burst ? (QUALITY === "low" ? 5 : 8) : sustain ? 5 : 3;
       for (let s = 0; s < cloudN; s++) {
         const nz = ud.nozzles[s % ud.nozzles.length];
         nz.getWorldPosition(_origin);
-        const px = _origin.x + (Math.random() - 0.5) * 1.8 + _fwd.x * 0.3;
-        const pz = _origin.z + (Math.random() - 0.5) * 2.4;
-        const py = impactY + (Math.random() - 0.5) * 0.1;
-        const spread = 3.2 + lvl * 4.0;
+        // Bias cloud behind/under the car so the body stays readable
+        const px = _origin.x - _fwd.x * 0.6 + (Math.random() - 0.5) * 1.0;
+        const pz = _origin.z + (Math.random() - 0.5) * 1.6;
+        const py = impactY + (Math.random() - 0.5) * 0.08;
+        const spread = 2.2 + lvl * 2.8;
         spawnVaporAt(
           ud,
           1,
           px,
           py,
           pz,
-          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.3,
-          (Math.random() - 0.5) * 0.15,
-          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.3,
-          1.6 + lvl * 2.0 + Math.random() * 0.9,
-          1.3 + Math.random() * 1.0,
-          0.98
+          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.2,
+          (Math.random() - 0.5) * 0.1,
+          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.2,
+          1.0 + lvl * 1.2 + Math.random() * 0.5,
+          1.0 + Math.random() * 0.7,
+          0.88
         );
       }
     }
 
     // Dense lingering trails
     if (burst || sustain) {
-      const trailN = QUALITY === "low" ? 4 : 7;
+      const trailN = QUALITY === "low" ? 3 : 5;
       for (let s = 0; s < trailN; s++) {
         const nz = ud.nozzles[s % ud.nozzles.length];
         nz.getWorldPosition(_origin);
-        _origin.addScaledVector(_belly, 0.3 + Math.random() * 0.55);
+        _origin.addScaledVector(_belly, 0.25 + Math.random() * 0.45);
         spawnVaporAt(
           ud,
           2,
-          _origin.x - _fwd.x * 0.5,
+          _origin.x - _fwd.x * 0.55,
           _origin.y,
-          _origin.z - _fwd.z * 0.5,
-          -_fwd.x * state.speed * 0.3 + (Math.random() - 0.5) * 0.5,
-          _belly.y * 0.55 + (Math.random() - 0.5) * 0.3,
-          -_fwd.z * state.speed * 0.3 + (Math.random() - 0.5) * 0.5,
-          0.75 + Math.random() * 0.7,
-          1.8 + Math.random() * 1.3,
-          0.85
+          _origin.z - _fwd.z * 0.55,
+          -_fwd.x * state.speed * 0.28 + (Math.random() - 0.5) * 0.4,
+          _belly.y * 0.5 + (Math.random() - 0.5) * 0.25,
+          -_fwd.z * state.speed * 0.28 + (Math.random() - 0.5) * 0.4,
+          0.6 + Math.random() * 0.55,
+          1.5 + Math.random() * 1.0,
+          0.78
         );
       }
     }
@@ -3455,7 +3456,7 @@ function exposeAPI() {
         updateTrains(step);
         pruneWorld(roadster.position.x);
         updateParticles(step);
-        updateCamera(step);
+        if (!window.__ROADSTER__?.cameraLocked) updateCamera(step);
         updateHUD();
       }
       renderFrame();
