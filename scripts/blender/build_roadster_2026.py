@@ -212,39 +212,59 @@ def add_lower_cladding(black):
 
 
 def add_canopy(glass):
-    """Single closed flush canopy volume — opaque dark glass, no panel gaps."""
+    """Single closed flush canopy — sits in the body cut, no see-through gaps."""
     bm = bmesh.new()
-    # Simpler prism tightly nested into the body shoulder
+    # Oversize slightly so the dark glass seals into the paint shoulder
     coords = [
-        # windshield base
-        (0.55, 0.78, 0.58),
-        (0.55, -0.78, 0.58),
-        # windshield top / roof front
-        (-0.05, 0.58, 1.02),
-        (-0.05, -0.58, 1.02),
-        # roof rear
-        (-0.85, 0.52, 0.98),
-        (-0.85, -0.52, 0.98),
-        # rear glass base
-        (-1.12, 0.72, 0.68),
-        (-1.12, -0.72, 0.68),
+        (0.58, 0.82, 0.55),
+        (0.58, -0.82, 0.55),
+        (0.10, 0.70, 0.88),
+        (0.10, -0.70, 0.88),
+        (-0.20, 0.55, 1.05),
+        (-0.20, -0.55, 1.05),
+        (-0.70, 0.52, 1.02),
+        (-0.70, -0.52, 1.02),
+        (-1.00, 0.58, 0.85),
+        (-1.00, -0.58, 0.85),
+        (-1.18, 0.78, 0.62),
+        (-1.18, -0.78, 0.62),
     ]
     vs = [bm.verts.new(c) for c in coords]
     faces = [
-        (0, 1, 3, 2),  # windshield
-        (2, 3, 5, 4),  # roof
-        (4, 5, 7, 6),  # rear
-        (0, 2, 4, 6),  # left
-        (1, 7, 5, 3),  # right
-        (0, 6, 7, 1),  # bottom seal
+        (0, 1, 3, 2),
+        (2, 3, 5, 4),
+        (4, 5, 7, 6),
+        (6, 7, 9, 8),
+        (8, 9, 11, 10),
+        (0, 2, 4, 6, 8, 10),  # left — use quads below
+        (1, 11, 9, 7, 5, 3),
+    ]
+    faces = [
+        (0, 1, 3, 2),
+        (2, 3, 5, 4),
+        (4, 5, 7, 6),
+        (6, 7, 9, 8),
+        (8, 9, 11, 10),
+        (0, 2, 4),
+        (0, 4, 6, 10),
+        (4, 6, 8),
+        (6, 8, 10),
+        (1, 11, 3),
+        (3, 11, 9, 5),
+        (5, 9, 7),
+        (7, 9, 11),
+        (0, 10, 11, 1),
     ]
     for f in faces:
-        bm.faces.new([vs[i] for i in f])
+        try:
+            bm.faces.new([vs[i] for i in f])
+        except ValueError:
+            pass
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.edges.ensure_lookup_table()
     sharp = [e for e in bm.edges if e.calc_face_angle(0) > math.radians(18)]
     if sharp:
-        bmesh.ops.bevel(bm, geom=sharp, offset=0.012, segments=1, affect="EDGES")
+        bmesh.ops.bevel(bm, geom=sharp, offset=0.01, segments=1, affect="EDGES")
     obj = mesh_from_bm("Canopy", bm, glass)
     shade_smooth(obj)
     return obj
@@ -344,10 +364,12 @@ def add_wheel(name, x, y, tire_mat, spoke_mat, disc_mat):
     side.data.materials.append(tire_mat)
     shade_smooth(side)
 
-    disc = make_axle_cylinder(0.20, 0.04, 20)
+    disc = make_axle_cylinder(0.22, 0.05, 20)
     disc.name = name + "_Disc"
     disc.data.materials.append(disc_mat)
     shade_flat(disc)
+    # Nudge disc slightly outward so the light face reads from the side
+    disc.location.y = 0.02 if y > 0 else -0.02
 
     for i in range(6):
         ang = i * math.pi / 3
