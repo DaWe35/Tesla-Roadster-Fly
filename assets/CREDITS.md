@@ -14,10 +14,18 @@ From [Poly Haven](https://polyhaven.com/) under [CC0 1.0](https://creativecommon
 | Asset | Use |
 |-------|-----|
 | [kloofendal_48d_partly_cloudy_puresky](https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky) (1K HDR) | Sky / reflections |
-| [asphalt_02](https://polyhaven.com/a/asphalt_02) (1K) | Road surfaces |
-| [concrete_floor_worn_001](https://polyhaven.com/a/concrete_floor_worn_001) (1K) | Deck undersides / supports |
+| [asphalt_02](https://polyhaven.com/a/asphalt_02) (1K) | Street road surfaces |
+| [asphalt_04](https://polyhaven.com/a/asphalt_04) (1K) | Elevated deck asphalt (`asphalt_alt`) |
+| [concrete_floor_worn_001](https://polyhaven.com/a/concrete_floor_worn_001) (1K) | Legacy concrete / misc |
+| [concrete_wall_008](https://polyhaven.com/a/concrete_wall_008) (1K) | Street curbs, wall fascias, planters |
+| [concrete_panels](https://polyhaven.com/a/concrete_panels) (1K) | Deck soffits, pillars, canopy, mid-rise facades |
 | [brick_wall_001](https://polyhaven.com/a/brick_wall_001) (1K) | Building masonry |
 | [rectangular_facade_tiles](https://polyhaven.com/a/rectangular_facade_tiles) (1K) | Glass facade panels |
+| [metal_plate](https://polyhaven.com/a/metal_plate) (1K) | Elevated curb rails, rooftop huts |
+| [gravel_floor_02](https://polyhaven.com/a/gravel_floor_02) (1K) | Camera-side / under-street ground fill |
+| [cobblestone_floor_03](https://polyhaven.com/a/cobblestone_floor_03) (1K) | Sidewalks, plazas |
+| [roof_09](https://polyhaven.com/a/roof_09) (1K) | Building roof caps |
+| [brown_mud_03](https://polyhaven.com/a/brown_mud_03) (1K) | Far-side dirt ground fill |
 
 ## Runtime
 

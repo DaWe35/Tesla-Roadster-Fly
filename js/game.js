@@ -186,27 +186,67 @@ function cloneMap(src, repeatX, repeatY) {
 /** Shared PBR sets (filled in boot). */
 const maps = {
   asphalt: { diff: null, nor: null, rough: null, ao: null },
+  asphaltAlt: { diff: null, nor: null, rough: null },
   concrete: { diff: null, nor: null, rough: null },
+  concreteWall: { diff: null, nor: null, rough: null },
+  concretePanel: { diff: null, nor: null, rough: null },
   brick: { diff: null, nor: null, rough: null },
   facade: { diff: null, nor: null, rough: null },
+  metal: { diff: null, nor: null, rough: null },
+  gravel: { diff: null, nor: null, rough: null },
+  cobble: { diff: null, nor: null, rough: null },
+  roof: { diff: null, nor: null, rough: null },
+  dirt: { diff: null, nor: null, rough: null },
   softParticle: null,
 };
 
+function loadMapSet(key, folder, withAo = false) {
+  const jobs = [
+    loadTexture(`assets/textures/${folder}/diff.jpg`).then((t) => (maps[key].diff = t)),
+    loadTexture(`assets/textures/${folder}/nor.jpg`, prepDataMap).then((t) => (maps[key].nor = t)),
+    loadTexture(`assets/textures/${folder}/rough.jpg`, prepDataMap).then((t) => (maps[key].rough = t)),
+  ];
+  if (withAo) {
+    jobs.push(
+      loadTexture(`assets/textures/${folder}/ao.jpg`, prepDataMap).then((t) => (maps[key].ao = t))
+    );
+  }
+  return jobs;
+}
+
+/** Build a MeshStandardMaterial from a map set + optional tint/params. */
+function pbrFrom(src, rx, ry, opts = {}) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: opts.color ?? 0xffffff,
+    map: cloneMap(src.diff, rx, ry),
+    normalMap: cloneMap(src.nor, rx, ry),
+    normalScale: opts.normalScale ?? new THREE.Vector2(1, 1),
+    roughnessMap: cloneMap(src.rough, rx, ry),
+    roughness: opts.roughness ?? 0.85,
+    metalness: opts.metalness ?? 0.05,
+    envMapIntensity: opts.envMapIntensity ?? 0.4,
+    ...(opts.ao && src.ao
+      ? { aoMap: cloneMap(src.ao, rx, ry), aoMapIntensity: opts.aoMapIntensity ?? 1 }
+      : {}),
+    ...(opts.emissive != null ? { emissive: opts.emissive, emissiveIntensity: opts.emissiveIntensity ?? 0.1 } : {}),
+  });
+  return mat;
+}
+
 async function loadWorldTextures() {
   const jobs = [
-    loadTexture("assets/textures/asphalt/diff.jpg").then((t) => (maps.asphalt.diff = t)),
-    loadTexture("assets/textures/asphalt/nor.jpg", prepDataMap).then((t) => (maps.asphalt.nor = t)),
-    loadTexture("assets/textures/asphalt/rough.jpg", prepDataMap).then((t) => (maps.asphalt.rough = t)),
-    loadTexture("assets/textures/asphalt/ao.jpg", prepDataMap).then((t) => (maps.asphalt.ao = t)),
-    loadTexture("assets/textures/concrete/diff.jpg").then((t) => (maps.concrete.diff = t)),
-    loadTexture("assets/textures/concrete/nor.jpg", prepDataMap).then((t) => (maps.concrete.nor = t)),
-    loadTexture("assets/textures/concrete/rough.jpg", prepDataMap).then((t) => (maps.concrete.rough = t)),
-    loadTexture("assets/textures/brick/diff.jpg").then((t) => (maps.brick.diff = t)),
-    loadTexture("assets/textures/brick/nor.jpg", prepDataMap).then((t) => (maps.brick.nor = t)),
-    loadTexture("assets/textures/brick/rough.jpg", prepDataMap).then((t) => (maps.brick.rough = t)),
-    loadTexture("assets/textures/facade/diff.jpg").then((t) => (maps.facade.diff = t)),
-    loadTexture("assets/textures/facade/nor.jpg", prepDataMap).then((t) => (maps.facade.nor = t)),
-    loadTexture("assets/textures/facade/rough.jpg", prepDataMap).then((t) => (maps.facade.rough = t)),
+    ...loadMapSet("asphalt", "asphalt", true),
+    ...loadMapSet("asphaltAlt", "asphalt_alt"),
+    ...loadMapSet("concrete", "concrete"),
+    ...loadMapSet("concreteWall", "concrete_wall"),
+    ...loadMapSet("concretePanel", "concrete_panel"),
+    ...loadMapSet("brick", "brick"),
+    ...loadMapSet("facade", "facade"),
+    ...loadMapSet("metal", "metal"),
+    ...loadMapSet("gravel", "gravel"),
+    ...loadMapSet("cobble", "cobble"),
+    ...loadMapSet("roof", "roof"),
+    ...loadMapSet("dirt", "dirt"),
     loadTexture("assets/textures/effects/soft-particle.png").then((t) => {
       t.colorSpace = THREE.SRGBColorSpace;
       maps.softParticle = t;
@@ -899,24 +939,24 @@ const particles = [];
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
   const cutawayMats = [];
-  // Prefer glass facade towers; brick for lower masonry
-  const useBrick = h < 9 && Math.random() > 0.35;
-  const src = useBrick ? maps.brick : maps.facade;
+  // Mix facade glass towers, brick masonry, and concrete panel mid-rises
+  const roll = Math.random();
+  const useBrick = h < 10 && roll > 0.55;
+  const usePanel = !useBrick && h < 16 && roll > 0.28;
+  const src = useBrick ? maps.brick : usePanel ? maps.concretePanel : maps.facade;
   const tint = useBrick
     ? new THREE.Color(color).lerp(new THREE.Color(0x8a7a6a), 0.55)
-    : new THREE.Color(0xb8c4d0).lerp(new THREE.Color(color), 0.25);
-  const diff = cloneMap(src.diff, Math.max(1, Math.round(w / 2.4)), Math.max(2, Math.round(h / 3.0)));
-  const nor = cloneMap(src.nor, diff.repeat.x, diff.repeat.y);
-  const rough = cloneMap(src.rough, diff.repeat.x, diff.repeat.y);
-  const bodyMat = new THREE.MeshStandardMaterial({
+    : usePanel
+      ? new THREE.Color(0xc8cdd4).lerp(new THREE.Color(color), 0.2)
+      : new THREE.Color(0xb8c4d0).lerp(new THREE.Color(color), 0.25);
+  const rx = Math.max(1, Math.round(w / 2.4));
+  const ry = Math.max(2, Math.round(h / 3.0));
+  const bodyMat = pbrFrom(src, rx, ry, {
     color: tint,
-    map: diff,
-    normalMap: nor,
-    normalScale: new THREE.Vector2(useBrick ? 1.1 : 0.55, useBrick ? 1.1 : 0.55),
-    roughnessMap: rough,
-    roughness: useBrick ? 0.82 : 0.35,
-    metalness: useBrick ? 0.06 : 0.55,
-    envMapIntensity: useBrick ? 0.35 : 1.1,
+    normalScale: new THREE.Vector2(useBrick ? 1.15 : usePanel ? 1.0 : 0.55, useBrick ? 1.15 : usePanel ? 1.0 : 0.55),
+    roughness: useBrick ? 0.84 : usePanel ? 0.72 : 0.28,
+    metalness: useBrick ? 0.06 : usePanel ? 0.12 : 0.62,
+    envMapIntensity: useBrick ? 0.35 : usePanel ? 0.55 : 1.25,
   });
   cutawayMats.push(bodyMat);
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
@@ -926,24 +966,26 @@ function makeBuilding(w, h, d, color) {
   g.add(mesh);
 
   const winMat = new THREE.MeshPhysicalMaterial({
-    color: 0xa8d4f0,
-    emissive: 0x6a9ec0,
-    emissiveIntensity: 0.35 + Math.random() * 0.45,
-    roughness: 0.12,
-    metalness: 0.15,
-    transmission: QUALITY === "high" ? 0.25 : 0,
+    color: 0xc8e8ff,
+    emissive: 0x5a90b8,
+    emissiveIntensity: 0.45 + Math.random() * 0.55,
+    roughness: 0.06,
+    metalness: 0.05,
+    transmission: QUALITY === "high" ? 0.55 : 0,
+    thickness: 0.35,
+    ior: 1.45,
     transparent: true,
-    opacity: 0.85,
-    envMapIntensity: 1.4,
+    opacity: QUALITY === "high" ? 0.55 : 0.72,
+    envMapIntensity: 1.85,
   });
   cutawayMats.push(winMat);
   const rows = Math.max(2, Math.floor(h / 1.35));
   const cols = Math.max(2, Math.floor(w / 1.0));
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (Math.random() > (useBrick ? 0.5 : 0.28)) continue;
+      if (Math.random() > (useBrick ? 0.48 : usePanel ? 0.38 : 0.22)) continue;
       const win = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.32 + Math.random() * 0.08, 0.4 + Math.random() * 0.08),
+        new THREE.PlaneGeometry(0.36 + Math.random() * 0.1, 0.48 + Math.random() * 0.1),
         winMat
       );
       win.position.set(
@@ -955,12 +997,13 @@ function makeBuilding(w, h, d, color) {
     }
   }
 
-  const sideMat = new THREE.MeshStandardMaterial({
-    color: tint.clone().multiplyScalar(0.72),
-    map: cloneMap(maps.brick.diff, Math.max(1, d / 3), Math.max(2, h / 3)),
-    roughness: 0.8,
-    metalness: 0.12,
-    envMapIntensity: 0.35,
+  const sideSrc = useBrick ? maps.brick : maps.concreteWall;
+  const sideMat = pbrFrom(sideSrc, Math.max(1, d / 3), Math.max(2, h / 3), {
+    color: tint.clone().multiplyScalar(0.78),
+    normalScale: new THREE.Vector2(1.05, 1.05),
+    roughness: 0.82,
+    metalness: 0.1,
+    envMapIntensity: 0.4,
   });
   cutawayMats.push(sideMat);
   for (const side of [-1, 1]) {
@@ -970,20 +1013,39 @@ function makeBuilding(w, h, d, color) {
     g.add(strip);
   }
 
+  // Cap roof slab + rooftop hut — always mapped (roof / metal / concrete panel)
+  const roofSlabMat = pbrFrom(maps.roof, Math.max(1.5, w / 2), Math.max(1.5, d / 2), {
+    color: 0xb8bcc4,
+    roughness: 0.7,
+    metalness: 0.35,
+    envMapIntensity: 0.7,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+  });
+  cutawayMats.push(roofSlabMat);
+  const roofSlab = new THREE.Mesh(
+    new THREE.BoxGeometry(w * 1.02, 0.18, d * 1.02),
+    roofSlabMat
+  );
+  roofSlab.position.set(0, h + 0.08, 0);
+  roofSlab.castShadow = true;
+  roofSlab.receiveShadow = true;
+  g.add(roofSlab);
+
   if (h > 5) {
-    const roofMat = new THREE.MeshStandardMaterial({
-      color: 0xd8dde6,
-      map: cloneMap(maps.concrete.diff, 2, 2),
-      metalness: 0.45,
-      roughness: 0.45,
-      envMapIntensity: 0.65,
+    const hutSrc = Math.random() > 0.45 ? maps.metal : maps.concretePanel;
+    const roofMat = pbrFrom(hutSrc, 2, 2, {
+      color: hutSrc === maps.metal ? 0x9aa3ad : 0xd0d5dc,
+      metalness: hutSrc === maps.metal ? 0.78 : 0.2,
+      roughness: hutSrc === maps.metal ? 0.35 : 0.7,
+      envMapIntensity: 0.85,
+      normalScale: new THREE.Vector2(1.1, 1.1),
     });
     cutawayMats.push(roofMat);
     const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(w * 0.45, 0.35 + Math.random() * 0.5, d * 0.4),
+      new THREE.BoxGeometry(w * 0.4, 0.35 + Math.random() * 0.55, d * 0.38),
       roofMat
     );
-    roof.position.set((Math.random() - 0.5) * w * 0.2, h + 0.25, (Math.random() - 0.5) * d * 0.15);
+    roof.position.set((Math.random() - 0.5) * w * 0.25, h + 0.4, (Math.random() - 0.5) * d * 0.2);
     roof.castShadow = true;
     g.add(roof);
   }
@@ -1260,30 +1322,24 @@ function createDeckSurface(levelIndex, zCenter) {
   const width = levelIndex === 0 ? 10 : levelIndex === 1 ? 8.5 : 7.5;
   // Subtle level tints on dark asphalt — avoid neon toy rails
   const deckTints = [0x9a9ea6, 0x8e9aaa, 0xa09088];
-  const railColors = [0xc4b896, 0x7a9e96, 0xb08088];
+  const railTints = [0xc8c2b0, 0xa8b8b4, 0xc0a8a8];
   const cutawayMats = [];
 
   const repX = SEGMENT_LEN / 6;
   const repY = width / 3;
-  const asphaltMap = cloneMap(maps.asphalt.diff, repX, repY);
-  const asphaltNor = cloneMap(maps.asphalt.nor, repX, repY);
-  const asphaltRough = cloneMap(maps.asphalt.rough, repX, repY);
-  const asphaltAO = cloneMap(maps.asphalt.ao, repX, repY);
-  const roadMat = new THREE.MeshStandardMaterial({
+  // Street uses primary asphalt; elevated decks optionally use asphalt_alt
+  const roadSrc = levelIndex === 0 ? maps.asphalt : maps.asphaltAlt;
+  const roadMat = pbrFrom(roadSrc, repX, repY, {
     color: deckTints[levelIndex],
-    map: asphaltMap,
-    normalMap: asphaltNor,
     normalScale: new THREE.Vector2(1.35, 1.35),
-    roughnessMap: asphaltRough,
-    aoMap: asphaltAO,
-    aoMapIntensity: 1.0,
     roughness: 0.98,
     metalness: 0.02,
     envMapIntensity: 0.18,
+    ao: levelIndex === 0,
   });
   cutawayMats.push(roadMat);
   const roadGeo = new THREE.BoxGeometry(SEGMENT_LEN, 0.4, width);
-  if (roadGeo.attributes.uv) {
+  if (roadGeo.attributes.uv && roadMat.aoMap) {
     roadGeo.setAttribute("uv2", roadGeo.attributes.uv);
   }
   const road = new THREE.Mesh(roadGeo, roadMat);
@@ -1309,16 +1365,14 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex > 0) {
-    const cRepX = SEGMENT_LEN / 10;
-    const cRepY = width / 5;
-    const underMat = new THREE.MeshStandardMaterial({
+    const cRepX = SEGMENT_LEN / 8;
+    const cRepY = width / 4;
+    const underMat = pbrFrom(maps.concretePanel, cRepX, cRepY, {
       color: levelIndex === 1 ? 0xd8e4f0 : 0xecd8c8,
-      map: cloneMap(maps.concrete.diff, cRepX, cRepY),
-      normalMap: cloneMap(maps.concrete.nor, cRepX, cRepY),
-      roughnessMap: cloneMap(maps.concrete.rough, cRepX, cRepY),
-      metalness: 0.18,
+      metalness: 0.14,
       roughness: 0.78,
-      envMapIntensity: 0.5,
+      envMapIntensity: 0.55,
+      normalScale: new THREE.Vector2(1.15, 1.15),
     });
     cutawayMats.push(underMat);
     const under = new THREE.Mesh(
@@ -1329,17 +1383,20 @@ function createDeckSurface(levelIndex, zCenter) {
     under.castShadow = true;
     under.receiveShadow = true;
     g.add(under);
+    // Edge fascia under the deck lip
+    const fasciaMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.6, {
+      color: railTints[levelIndex],
+      metalness: 0.18,
+      roughness: 0.7,
+      envMapIntensity: 0.45,
+    });
+    cutawayMats.push(fasciaMat);
     const underStripe = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN, 0.08, width + 0.7),
-      new THREE.MeshStandardMaterial({
-        color: railColors[levelIndex],
-        emissive: railColors[levelIndex],
-        emissiveIntensity: 0.06,
-        metalness: 0.55,
-        roughness: 0.35,
-      })
+      new THREE.BoxGeometry(SEGMENT_LEN, 0.22, width + 0.85),
+      fasciaMat
     );
-    underStripe.position.set(0, ly - 0.85, 0);
+    underStripe.position.set(0, ly - 0.92, 0);
+    underStripe.castShadow = true;
     g.add(underStripe);
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xa5f3fc,
@@ -1355,13 +1412,12 @@ function createDeckSurface(levelIndex, zCenter) {
 
   if (levelIndex === 2) {
     const canopyY = ceilingY(2) + DECK_THICK;
-    const canopyMat = new THREE.MeshStandardMaterial({
+    const canopyMat = pbrFrom(maps.concretePanel, SEGMENT_LEN / 10, width / 4, {
       color: 0x8a93a0,
-      map: cloneMap(maps.concrete.diff, SEGMENT_LEN / 10, width / 4),
-      normalMap: cloneMap(maps.concrete.nor, SEGMENT_LEN / 10, width / 4),
-      roughnessMap: cloneMap(maps.concrete.rough, SEGMENT_LEN / 10, width / 4),
-      metalness: 0.3,
-      roughness: 0.7,
+      metalness: 0.28,
+      roughness: 0.68,
+      envMapIntensity: 0.55,
+      normalScale: new THREE.Vector2(1.1, 1.1),
     });
     cutawayMats.push(canopyMat);
     const canopy = new THREE.Mesh(
@@ -1398,33 +1454,46 @@ function createDeckSurface(levelIndex, zCenter) {
     g.add(dash);
   }
 
-  const pillarMat = new THREE.MeshStandardMaterial({
+  const pillarMat = pbrFrom(maps.concretePanel, 1.2, 3.2, {
     color: 0xd0d6de,
-    map: cloneMap(maps.concrete.diff, 1.5, 3),
-    normalMap: cloneMap(maps.concrete.nor, 1.5, 3),
-    roughnessMap: cloneMap(maps.concrete.rough, 1.5, 3),
-    roughness: 0.82,
-    metalness: 0.12,
-    envMapIntensity: 0.35,
+    roughness: 0.8,
+    metalness: 0.1,
+    envMapIntensity: 0.4,
+    normalScale: new THREE.Vector2(1.25, 1.25),
   });
+  cutawayMats.push(pillarMat);
+
+  // Textured curb / rail — metal on elevated decks, concrete wall on street
+  const curbSrc = levelIndex === 0 ? maps.concreteWall : maps.metal;
+  const curbMat = pbrFrom(curbSrc, SEGMENT_LEN / 5, 0.5, {
+    color: railTints[levelIndex],
+    metalness: levelIndex === 0 ? 0.18 : 0.72,
+    roughness: levelIndex === 0 ? 0.75 : 0.32,
+    envMapIntensity: levelIndex === 0 ? 0.35 : 0.9,
+    normalScale: new THREE.Vector2(1.2, 1.2),
+  });
+  cutawayMats.push(curbMat);
 
   for (const side of [-1, 1]) {
     const curb = new THREE.Mesh(
       new THREE.BoxGeometry(SEGMENT_LEN, 0.45, 0.32),
-      new THREE.MeshStandardMaterial({
-        color: railColors[levelIndex],
-        metalness: 0.62,
-        roughness: 0.32,
-        emissive: railColors[levelIndex],
-        emissiveIntensity: 0.04,
-        envMapIntensity: 0.7,
-      })
+      curbMat
     );
     curb.position.set(0, ly + 0.15, side * (width / 2));
     curb.castShadow = true;
+    curb.receiveShadow = true;
     g.add(curb);
 
+    // Outer vertical fascia on elevated decks
     if (levelIndex > 0) {
+      const edgeFascia = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN, 0.7, 0.14),
+        curbMat
+      );
+      edgeFascia.position.set(0, ly - 0.35, side * (width / 2 + 0.28));
+      edgeFascia.castShadow = true;
+      g.add(edgeFascia);
+
       for (let p = 0; p < 3; p++) {
         const pillar = new THREE.Mesh(
           new THREE.CylinderGeometry(0.35, 0.45, ly - 0.3, 8),
@@ -1442,15 +1511,21 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex === 0) {
-    const walkMat = new THREE.MeshStandardMaterial({
-      color: 0xc8cdd4,
-      map: cloneMap(maps.concrete.diff, SEGMENT_LEN / 8, 1.2),
-      normalMap: cloneMap(maps.concrete.nor, SEGMENT_LEN / 8, 1.2),
-      roughnessMap: cloneMap(maps.concrete.rough, SEGMENT_LEN / 8, 1.2),
-      roughness: 0.9,
-      metalness: 0.06,
-      envMapIntensity: 0.2,
+    const walkMat = pbrFrom(maps.cobble, SEGMENT_LEN / 5, 1.4, {
+      color: 0xc4c0b8,
+      roughness: 0.88,
+      metalness: 0.04,
+      envMapIntensity: 0.22,
+      normalScale: new THREE.Vector2(1.3, 1.3),
     });
+    cutawayMats.push(walkMat);
+    const potMat = pbrFrom(maps.concreteWall, 1, 1, {
+      color: 0xa89888,
+      roughness: 0.85,
+      metalness: 0.08,
+      envMapIntensity: 0.3,
+    });
+    cutawayMats.push(potMat);
     for (const side of [-1, 1]) {
       const walk = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN, 0.28, 1.9),
@@ -1461,13 +1536,7 @@ function createDeckSurface(levelIndex, zCenter) {
       g.add(walk);
 
       for (let i = 0; i < 4; i++) {
-        const pot = new THREE.Mesh(
-          new THREE.BoxGeometry(0.7, 0.7, 0.7),
-          new THREE.MeshStandardMaterial({
-            color: BUILDING_PALETTE[(i * 3 + (side > 0 ? 0 : 5)) % BUILDING_PALETTE.length],
-            roughness: 0.7,
-          })
-        );
+        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), potMat);
         pot.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, ly + 0.45, side * 5.6);
         pot.castShadow = true;
         g.add(pot);
@@ -1480,6 +1549,49 @@ function createDeckSurface(levelIndex, zCenter) {
   return g;
 }
 
+
+function createGroundStrip(zCenter) {
+  const g = new THREE.Group();
+  // Wide terrain under/beside the corridor so chase-cam never sees empty void
+  const strips = [
+    { src: maps.gravel, z: -28, depth: 36, color: 0x8a8678, y: -0.05 },
+    { src: maps.dirt, z: 26, depth: 32, color: 0x7a6a55, y: -0.05 },
+    { src: maps.cobble, z: -12, depth: 8, color: 0x9a968c, y: -0.04 }, // plaza toward cam
+    { src: maps.gravel, z: 12, depth: 10, color: 0x8c887c, y: -0.04 },
+  ];
+  for (const s of strips) {
+    const mat = pbrFrom(s.src, SEGMENT_LEN / 5, s.depth / 4, {
+      color: s.color,
+      roughness: 0.95,
+      metalness: 0.02,
+      envMapIntensity: 0.15,
+      normalScale: new THREE.Vector2(1.4, 1.4),
+    });
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.12, s.depth),
+      mat
+    );
+    mesh.position.set(0, s.y, s.z);
+    mesh.receiveShadow = true;
+    g.add(mesh);
+  }
+  // City plaza pad on camera-near shoulder
+  const plazaMat = pbrFrom(maps.cobble, 4, 4, {
+    color: 0xb0aaa0,
+    roughness: 0.9,
+    metalness: 0.03,
+    envMapIntensity: 0.2,
+    normalScale: new THREE.Vector2(1.2, 1.2),
+  });
+  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 10), plazaMat);
+  plaza.position.set(-SEGMENT_LEN / 4, -0.02, -16);
+  plaza.receiveShadow = true;
+  g.add(plaza);
+
+  g.position.x = zCenter;
+  g.userData.isGroundStrip = true;
+  return g;
+}
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
@@ -1514,27 +1626,72 @@ function createCityBlock(zCenter) {
       x += w + 1.2 + Math.random() * 2;
     }
   }
-  // Distant backdrop towers — camera side stays behind the chase cam
-  for (let i = 0; i < 4; i++) {
-    const h = 12 + Math.random() * 22;
-    const d = 3 + Math.random() * 4;
+  // Distant backdrop towers — denser on both sides so horizon isn't empty
+  for (let i = 0; i < 7; i++) {
+    const h = 12 + Math.random() * 24;
+    const d = 3 + Math.random() * 5;
     const b = makeBuilding(
-      3 + Math.random() * 4,
+      3 + Math.random() * 4.5,
       h,
       d,
       BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
     );
-    const camSide = Math.random() > 0.45;
-    const dist = camSide ? 28 + Math.random() * 12 : 20 + Math.random() * 12;
+    const camSide = i % 2 === 0 || Math.random() > 0.4;
+    const dist = camSide ? 30 + Math.random() * 18 : 22 + Math.random() * 16;
     b.position.set(
-      -SEGMENT_LEN / 2 + 4 + i * 7,
+      -SEGMENT_LEN / 2 + 2 + i * 4,
       0,
       (camSide ? -1 : 1) * dist
     );
     b.userData.cameraSide = camSide;
     g.add(b);
   }
+  // Extra far skyline ring (behind chase cam) — fills left void
+  for (let i = 0; i < 5; i++) {
+    const h = 18 + Math.random() * 28;
+    const b = makeBuilding(
+      4 + Math.random() * 5,
+      h,
+      4 + Math.random() * 4,
+      BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
+    );
+    b.position.set(
+      -SEGMENT_LEN / 2 + 3 + i * 5.5,
+      0,
+      -(42 + Math.random() * 14)
+    );
+    b.userData.cameraSide = true;
+    g.add(b);
+  }
   g.position.x = zCenter;
+  return g;
+}
+
+/** Continuous scrolling ground slab that tracks the car along X. */
+let terrainFollow = null;
+function ensureTerrainFollow() {
+  if (terrainFollow) return terrainFollow;
+  const g = new THREE.Group();
+  const slabs = [
+    { src: maps.gravel, z: -22, w: 90, d: 48, color: 0x858074 },
+    { src: maps.dirt, z: 24, w: 90, d: 44, color: 0x6e5e4a },
+    { src: maps.cobble, z: 0, w: 90, d: 18, color: 0x7a7670 }, // under-street continuum
+  ];
+  for (const s of slabs) {
+    const mat = pbrFrom(s.src, s.w / 6, s.d / 4, {
+      color: s.color,
+      roughness: 0.96,
+      metalness: 0.02,
+      envMapIntensity: 0.12,
+      normalScale: new THREE.Vector2(1.5, 1.5),
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.1, s.d), mat);
+    mesh.position.set(0, -0.06, s.z);
+    mesh.receiveShadow = true;
+    g.add(mesh);
+  }
+  scene.add(g);
+  terrainFollow = g;
   return g;
 }
 
@@ -1572,6 +1729,7 @@ const input = { up: false, down: false, flip: false };
 
 let segments = [];
 let cities = [];
+let grounds = [];
 let obstacles = [];
 let trains = [];
 let pickups = [];
@@ -1688,6 +1846,10 @@ function spawnSegment(xCenter, safe = false) {
   const city = createCityBlock(xCenter);
   worldRoot.add(city);
   cities.push(city);
+
+  const ground = createGroundStrip(xCenter);
+  worldRoot.add(ground);
+  grounds.push(ground);
 
   if (anySolid) {
     // Opening stretch (gap-safe): dense easy floor obstacles from second one.
@@ -1809,11 +1971,13 @@ function placeHazards(xCenter, opening = false) {
 function resetWorld() {
   for (const s of segments) worldRoot.remove(s);
   for (const c of cities) worldRoot.remove(c);
+  for (const gr of grounds) worldRoot.remove(gr);
   for (const o of obstacles) worldRoot.remove(o);
   for (const t of trains) worldRoot.remove(t);
   for (const p of pickups) worldRoot.remove(p);
   segments = [];
   cities = [];
+  grounds = [];
   obstacles = [];
   trains = [];
   pickups = [];
@@ -1821,6 +1985,7 @@ function resetWorld() {
   columnGapPlan.clear();
   lastGapCol[0] = lastGapCol[1] = lastGapCol[2] = -999;
   rngSeed = (Date.now() % 100000) + 1;
+  ensureTerrainFollow();
 
   for (let i = -SEGMENTS_BEHIND; i < SEGMENTS_AHEAD; i++) {
     spawnSegment(i * SEGMENT_LEN, i < 4);
@@ -1839,9 +2004,12 @@ function pruneWorld(playerX) {
   };
   segments = filterKeep(segments);
   cities = filterKeep(cities);
+  grounds = filterKeep(grounds);
   obstacles = filterKeep(obstacles);
   trains = filterKeep(trains);
   pickups = filterKeep(pickups);
+
+  if (terrainFollow) terrainFollow.position.x = playerX;
 
   while (nextSegmentX < playerX + SEGMENT_LEN * SEGMENTS_AHEAD) {
     spawnSegment(nextSegmentX);
