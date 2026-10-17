@@ -386,10 +386,10 @@ function createRoadster() {
     wheels.push({ hub, spinner, baseY: y });
   }
 
-  // Cold-gas thrusters — large, depth-test-off so decks/cutaways never hide them.
-  // Local −Y = belly (floor when upright, ceiling when inverted).
-  const mkThrustMat = (color, opacity = 0) => {
-    const m = new THREE.MeshBasicMaterial({
+  // Cold-gas thrusters — parented to body at nozzles so they never drift.
+  // Local −Y = belly → floor upright / ceiling when body.roll = π.
+  const mkThrustMat = (color, opacity = 0) =>
+    new THREE.MeshBasicMaterial({
       color,
       transparent: true,
       opacity,
@@ -398,21 +398,21 @@ function createRoadster() {
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
     });
-    return m;
-  };
   const plumes = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
-    const sz = i < 2 ? -0.32 : 0.32;
-    const sx = -2.45 + (i % 2) * 0.22;
-    group.position.set(sx, 0.08, sz);
+    // Match nozzle layout (rear bay)
+    const sz = i < 2 ? -0.28 : 0.28;
+    const sy = i % 2 === 0 ? 0.18 : 0.32;
+    group.position.set(-2.7, sy, sz);
 
-    // Cone default axis = +Y; group quaternion aims +Y along belly each frame
+    // Cone default +Y; Rx=π aims tip along body −Y (belly)
     const core = new THREE.Mesh(
       new THREE.ConeGeometry(0.28, 2.2, 10, 1, true),
       mkThrustMat(0xffffff, 0)
     );
-    core.position.y = 1.1; // extend outward from nozzle along +Y
+    core.rotation.x = Math.PI;
+    core.position.y = -1.1;
     core.renderOrder = 1001;
     group.add(core);
 
@@ -420,7 +420,8 @@ function createRoadster() {
       new THREE.ConeGeometry(0.5, 3.0, 10, 1, true),
       mkThrustMat(0x38bdf8, 0)
     );
-    glow.position.y = 1.4;
+    glow.rotation.x = Math.PI;
+    glow.position.y = -1.4;
     glow.renderOrder = 1000;
     group.add(glow);
 
@@ -428,19 +429,18 @@ function createRoadster() {
       new THREE.CircleGeometry(0.45, 16),
       mkThrustMat(0xe0f2fe, 0)
     );
-    halo.rotation.x = -Math.PI / 2;
-    halo.position.y = 0.05;
+    halo.rotation.x = Math.PI / 2;
+    halo.position.y = -0.05;
     halo.renderOrder = 1002;
     group.add(halo);
 
     group.visible = false;
-    // Parent to root (not body) so we can aim in world space — body.roll=π
-    // would cancel a child Rx=π and hide belly jets when inverted.
-    root.add(group);
-    plumes.push({ group, core, glow, halo, nozzleIndex: i });
+    body.add(group);
+    plumes.push({ group, core, glow, halo });
   }
 
-  // Jet particles (world space, depth-test off)
+  // Particles live on the scene in true world space (not under root — that
+  // previously double-counted roadster.position and made jets fly away).
   const jetCount = 64;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
@@ -466,21 +466,21 @@ function createRoadster() {
   );
   jets.frustumCulled = false;
   jets.renderOrder = 1003;
-  root.add(jets);
+  // attached to scene after roadster is created — see below
 
-  // Big hold flare between car and ceiling — readable on portrait mobile
+  // Hold flare on body, offset along belly (−Y)
   const holdFlare = new THREE.Mesh(
-    new THREE.SphereGeometry(0.7, 12, 10),
+    new THREE.SphereGeometry(0.65, 12, 10),
     mkThrustMat(0x7dd3fc, 0)
   );
+  holdFlare.position.set(-2.4, -0.85, 0);
   holdFlare.renderOrder = 1004;
   holdFlare.visible = false;
-  root.add(holdFlare);
+  body.add(holdFlare);
 
   const _q = new THREE.Quaternion();
   const _belly = new THREE.Vector3();
   const _origin = new THREE.Vector3();
-  const _up = new THREE.Vector3(0, 1, 0);
 
   root.userData = {
     body,
@@ -499,13 +499,14 @@ function createRoadster() {
     _q,
     _belly,
     _origin,
-    _up,
   };
   return root;
 }
 
 const roadster = createRoadster();
 scene.add(roadster);
+// World-space jet particles (must NOT be parented under the moving car root)
+scene.add(roadster.userData.jets);
 
 /* ── World segments ───────────────────────────────────────── */
 const worldRoot = new THREE.Group();
@@ -1564,10 +1565,10 @@ function updateTrains(dt) {
 }
 
 /**
- * Thrusters (visual only). Root causes of "invisible" jets previously:
- * - hop lasted ~0.12s then thrust lerped away immediately
- * - small additive cones with depthTest buried in deck meshes / behind the car
- * Fix: big depthTest:false plumes, thrustHold after hop/flip, bright sustained inverted jets.
+ * Thrusters (visual only), anchored to the car.
+ * Bug: world-space plume positions were written into objects parented under the
+ * moving roadster root, so local = world double-counted X and jets flew away.
+ * Fix: plumes/flare parented to body; particles on the scene in true world space.
  */
 function burstThrusters(amount = 1, hold = 0.5) {
   const ud = roadster.userData;
@@ -1601,22 +1602,11 @@ function updateThrusters(dt) {
     light.color.setHex(0x7dd3fc);
   }
 
-  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
-  body.updateWorldMatrix(true, false);
-  body.getWorldQuaternion(_q);
-  // Belly = local −Y → floor when upright, ceiling when inverted
-  _belly.set(0, -1, 0).applyQuaternion(_q);
-
-  // Aim plumes in world space along belly (avoids body×child rotation cancel)
+  // Plumes stay on body — only pulse opacity/scale each frame
   ud.plumes.forEach((p, i) => {
     p.group.visible = active;
-    const nz = ud.nozzles[p.nozzleIndex % ud.nozzles.length];
-    nz.getWorldPosition(_origin);
-    p.group.position.copy(_origin);
-    // Cone default +Y; emit along belly (reuse _q as scratch via setFromUnitVectors)
-    p.group.quaternion.setFromUnitVectors(ud._up, _belly);
     const pulse = 1 + Math.sin(state.time * 26 + i * 1.7) * 0.08;
-    p.group.scale.setScalar((1.15 + lvl * 0.85) * pulse);
+    p.group.scale.setScalar((1.05 + lvl * 0.75) * pulse);
     p.core.material.opacity = active ? 0.85 + lvl * 0.15 : 0;
     p.glow.material.opacity = active ? 0.55 + lvl * 0.4 : 0;
     p.halo.material.opacity = active ? 0.65 + lvl * 0.35 : 0;
@@ -1626,13 +1616,16 @@ function updateThrusters(dt) {
     const showFlare = active && (state.inverted || state.flipping || ud.thrustHold > 0);
     ud.holdFlare.visible = showFlare;
     if (showFlare) {
-      roadster.getWorldPosition(_origin);
-      ud.holdFlare.position.copy(_origin).addScaledVector(_belly, 1.1);
-      ud.holdFlare.material.opacity = 0.35 + lvl * 0.45;
-      const fs = 0.9 + lvl * 1.1 + Math.sin(state.time * 20) * 0.12;
+      ud.holdFlare.material.opacity = 0.4 + lvl * 0.45;
+      const fs = 0.95 + lvl * 1.05 + Math.sin(state.time * 20) * 0.12;
       ud.holdFlare.scale.setScalar(fs);
     }
   }
+
+  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _origin } = ud;
+  body.updateWorldMatrix(true, false);
+  body.getWorldQuaternion(_q);
+  _belly.set(0, -1, 0).applyQuaternion(_q);
 
   if (active) {
     const spawnN = state.hopping || state.flipping || ud.thrustHold > 0 ? 4 : 2;
@@ -1647,6 +1640,7 @@ function updateThrusters(dt) {
       if (slot < 0) continue;
       const nz = ud.nozzles[s % ud.nozzles.length];
       nz.getWorldPosition(_origin);
+      // True world coords — jets object is on the scene, not under roadster
       jetPos[slot * 3] = _origin.x + (Math.random() - 0.5) * 0.25;
       jetPos[slot * 3 + 1] = _origin.y + (Math.random() - 0.5) * 0.2;
       jetPos[slot * 3 + 2] = _origin.z + (Math.random() - 0.5) * 0.25;
