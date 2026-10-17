@@ -233,6 +233,35 @@ function pbrFrom(src, rx, ry, opts = {}) {
   return mat;
 }
 
+/** Procedural yellow/black or red/white hazard stripe maps (canvas). */
+function makeHazardStripeTexture(mode = "yellowBlack") {
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 64;
+  const ctx = c.getContext("2d");
+  const a = mode === "redWhite" ? "#c1121f" : "#f4c430";
+  const b = mode === "redWhite" ? "#f5f5f5" : "#1a1a1a";
+  const stripeW = 28;
+  for (let x = -stripeW; x < c.width + stripeW; x += stripeW) {
+    ctx.fillStyle = ((x / stripeW) | 0) % 2 === 0 ? a : b;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x + stripeW, 0);
+    ctx.lineTo(x + stripeW * 2, c.height);
+    ctx.lineTo(x + stripeW, c.height);
+    ctx.closePath();
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = maxAniso;
+  return tex;
+}
+
+let hazardStripeYB = null;
+let hazardStripeRW = null;
+
 async function loadWorldTextures() {
   const jobs = [
     ...loadMapSet("asphalt", "asphalt", true),
@@ -253,6 +282,8 @@ async function loadWorldTextures() {
     }),
   ];
   await Promise.all(jobs);
+  hazardStripeYB = makeHazardStripeTexture("yellowBlack");
+  hazardStripeRW = makeHazardStripeTexture("redWhite");
 }
 
 /* ── Lights ───────────────────────────────────────────────── */
@@ -1059,86 +1090,129 @@ function makeBuilding(w, h, d, color) {
 
 function makeTrain(length = 10) {
   const g = new THREE.Group();
-  const colors = [0xe63946, 0x457b9d, 0x2a9d8f, 0xf4a261, 0x9b5de5];
+  const liveries = [0xc45c4a, 0x4a6d8c, 0x3d7a72, 0xb8895a, 0x6b5b8a];
   const cars = Math.max(2, Math.floor(length / 4));
+  const bodyMatBase = pbrFrom(maps.metal, 2.2, 1.2, {
+    color: 0xb8c0c8,
+    metalness: 0.82,
+    roughness: 0.28,
+    envMapIntensity: 1.1,
+    normalScale: new THREE.Vector2(1.15, 1.15),
+  });
+  const roofMat = pbrFrom(maps.metal, 2, 1, {
+    color: 0x3a4046,
+    metalness: 0.7,
+    roughness: 0.4,
+    envMapIntensity: 0.8,
+  });
+  const stripeMat = new THREE.MeshStandardMaterial({
+    color: 0xf0f2f4,
+    roughness: 0.55,
+    metalness: 0.15,
+  });
+  const winMat = new THREE.MeshPhysicalMaterial({
+    color: 0x8ec8e8,
+    emissive: 0x3a7188,
+    emissiveIntensity: 0.55,
+    roughness: 0.08,
+    metalness: 0.05,
+    transmission: QUALITY === "high" ? 0.35 : 0,
+    transparent: true,
+    opacity: 0.78,
+    envMapIntensity: 1.5,
+  });
+
   for (let i = 0; i < cars; i++) {
-    const col = colors[i % colors.length];
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(3.6, 1.6, 1.85),
-      new THREE.MeshStandardMaterial({
-        color: col,
-        metalness: 0.35,
-        roughness: 0.4,
-      })
-    );
-    body.position.set(i * 4.0, 0.95, 0);
+    const col = liveries[i % liveries.length];
+    const bodyMat = bodyMatBase.clone();
+    bodyMat.color = new THREE.Color(col).lerp(new THREE.Color(0xa8b0b8), 0.35);
+    const cx = i * 4.0;
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.55, 1.85), bodyMat);
+    body.position.set(cx, 0.95, 0);
     body.castShadow = true;
     body.receiveShadow = true;
     g.add(body);
 
-    // Roof walkable plane (slightly raised for landing)
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(3.5, 0.12, 1.75),
-      new THREE.MeshStandardMaterial({
-        color: 0x2d3436,
-        metalness: 0.5,
-        roughness: 0.5,
+    // Slightly inset lower skirt
+    const skirt = new THREE.Mesh(
+      new THREE.BoxGeometry(3.55, 0.35, 1.9),
+      pbrFrom(maps.metal, 2, 0.4, {
+        color: 0x2c3036,
+        metalness: 0.75,
+        roughness: 0.4,
       })
     );
-    roof.position.set(i * 4.0, 1.82, 0);
+    skirt.position.set(cx, 0.32, 0);
+    skirt.castShadow = true;
+    g.add(skirt);
+
+    // Walkable roof + AC blister
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.14, 1.75), roofMat);
+    roof.position.set(cx, 1.82, 0);
     roof.castShadow = true;
     g.add(roof);
-
-    // Stripe
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(3.5, 0.25, 1.87),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 })
+    const blister = new THREE.Mesh(
+      new THREE.BoxGeometry(1.4, 0.22, 0.7),
+      roofMat
     );
-    stripe.position.set(i * 4.0, 0.7, 0);
+    blister.position.set(cx + 0.2, 1.98, 0);
+    blister.castShadow = true;
+    g.add(blister);
+
+    // Belt stripe
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.52, 0.22, 1.88), stripeMat);
+    stripe.position.set(cx, 0.72, 0);
     g.add(stripe);
 
-    // Windows
+    // Continuous window ribbon + dividers
     for (const side of [-1, 1]) {
-      for (let w = 0; w < 3; w++) {
-        const win = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.55, 0.45),
-          new THREE.MeshStandardMaterial({
-            color: 0xa8e6ff,
-            emissive: 0x4499bb,
-            emissiveIntensity: 0.4,
-          })
+      const ribbon = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 0.55), winMat);
+      ribbon.position.set(cx, 1.2, side * 0.935);
+      ribbon.rotation.y = side > 0 ? 0 : Math.PI;
+      g.add(ribbon);
+      for (let w = 0; w < 4; w++) {
+        const mullion = new THREE.Mesh(
+          new THREE.BoxGeometry(0.06, 0.55, 0.04),
+          bodyMat
         );
-        win.position.set(i * 4.0 - 1.0 + w * 1.0, 1.15, side * 0.94);
-        win.rotation.y = side > 0 ? 0 : Math.PI;
-        g.add(win);
+        mullion.position.set(cx - 1.35 + w * 0.9, 1.2, side * 0.94);
+        g.add(mullion);
       }
     }
 
-    // Wheels
-    for (const wz of [-0.7, 0.7]) {
-      for (const wx of [-1.1, 1.1]) {
+    // Bogie wheels
+    for (const wz of [-0.72, 0.72]) {
+      for (const wx of [-1.15, 1.15]) {
         const wh = new THREE.Mesh(
           new THREE.CylinderGeometry(0.28, 0.28, 0.18, 12),
           matTire
         );
         wh.rotation.z = Math.PI / 2;
-        wh.position.set(i * 4.0 + wx, 0.28, wz);
+        wh.position.set(cx + wx, 0.28, wz);
         g.add(wh);
       }
     }
   }
-  // Nose cone
-  const nose = new THREE.Mesh(
-    new THREE.ConeGeometry(0.7, 1.4, 10),
-    new THREE.MeshStandardMaterial({
-      color: colors[0],
-      metalness: 0.4,
-      roughness: 0.35,
-    })
-  );
-  nose.rotation.z = Math.PI / 2;
-  nose.position.set(-0.4, 0.95, 0);
+
+  // Cab nose — rounded metal front
+  const noseMat = pbrFrom(maps.metal, 1, 1, {
+    color: liveries[0],
+    metalness: 0.7,
+    roughness: 0.32,
+    envMapIntensity: 1.0,
+  });
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.35, 1.7), noseMat);
+  nose.position.set(-0.55, 0.95, 0);
+  nose.castShadow = true;
   g.add(nose);
+  const windshield = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.7, 0.55),
+    winMat
+  );
+  windshield.position.set(-1.01, 1.15, 0);
+  windshield.rotation.y = Math.PI / 2;
+  g.add(windshield);
 
   g.userData.length = cars * 4.0;
   g.userData.roofY = 1.88;
@@ -1247,37 +1321,117 @@ function makeTunnel(levelY) {
   return g;
 }
 
+/** Jersey-barrier profile extruded along Z (angled faces). */
+function jerseyGeometry(depth = 2.4) {
+  const shape = new THREE.Shape();
+  // Classic K-rail / Jersey cross-section (X = lateral, Y = up)
+  shape.moveTo(-0.9, 0);
+  shape.lineTo(0.9, 0);
+  shape.lineTo(0.9, 0.28);
+  shape.lineTo(0.52, 0.58);
+  shape.lineTo(0.42, 1.32);
+  shape.lineTo(-0.42, 1.32);
+  shape.lineTo(-0.52, 0.58);
+  shape.lineTo(-0.9, 0.28);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled: false,
+    steps: 1,
+  });
+  geo.translate(0, 0, -depth / 2);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function makeBarrier(level, onCeiling = false) {
   const g = new THREE.Group();
   const ly = floorY(level);
   const cy = ceilingY(level);
-  const block = new THREE.Mesh(
-    new THREE.BoxGeometry(1.8, 1.35, 2.4),
-    new THREE.MeshStandardMaterial({
-      color: onCeiling ? 0x7c3aed : 0xff6b6b,
-      metalness: 0.2,
-      roughness: 0.55,
-    })
-  );
-  const yCenter = onCeiling ? cy - 0.7 : ly + 0.7;
-  block.position.set(0, yCenter, 0);
-  block.castShadow = true;
-  g.add(block);
-  const stripe = new THREE.Mesh(
-    new THREE.BoxGeometry(1.85, 0.25, 2.45),
-    new THREE.MeshStandardMaterial({ color: 0xffffff })
-  );
-  stripe.position.set(0, yCenter, 0);
-  g.add(stripe);
-  // Hanging stem for ceiling barriers
+  const useRW = level % 2 === 1;
+  const stripeMap = useRW ? hazardStripeRW : hazardStripeYB;
+
   if (onCeiling) {
-    const stem = new THREE.Mesh(
-      new THREE.BoxGeometry(0.25, 0.5, 0.25),
-      new THREE.MeshStandardMaterial({ color: 0x4c1d95, metalness: 0.4 })
-    );
-    stem.position.set(0, cy - 0.15, 0);
-    g.add(stem);
+    // Hanging construction / hazard panel (not a floor Jersey)
+    const panelMat = pbrFrom(maps.metal, 1.4, 1.0, {
+      color: 0x8a9098,
+      metalness: 0.7,
+      roughness: 0.35,
+      envMapIntensity: 0.9,
+      normalScale: new THREE.Vector2(1.1, 1.1),
+    });
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.15, 2.35), panelMat);
+    panel.position.set(0, cy - 0.75, 0);
+    panel.castShadow = true;
+    g.add(panel);
+
+    const stripeMat = new THREE.MeshStandardMaterial({
+      map: stripeMap.clone(),
+      roughness: 0.55,
+      metalness: 0.1,
+    });
+    stripeMat.map.repeat.set(3, 1);
+    stripeMat.map.needsUpdate = true;
+    for (const side of [-1, 1]) {
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.35), stripeMat);
+      stripe.position.set(0, cy - 0.55, side * 1.19);
+      stripe.rotation.y = side > 0 ? 0 : Math.PI;
+      g.add(stripe);
+    }
+    const frameMat = pbrFrom(maps.concretePanel, 1, 1, {
+      color: 0xb0b6be,
+      roughness: 0.7,
+      metalness: 0.15,
+    });
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.12, 2.5), frameMat);
+    frame.position.set(0, cy - 0.18, 0);
+    g.add(frame);
+    // Suspension stems
+    const stemMat = pbrFrom(maps.metal, 0.3, 0.5, {
+      color: 0x4a5058,
+      metalness: 0.85,
+      roughness: 0.3,
+    });
+    for (const z of [-0.7, 0.7]) {
+      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.12), stemMat);
+      stem.position.set(0, cy - 0.08, z);
+      g.add(stem);
+    }
+  } else {
+    const bodyMat = pbrFrom(maps.concretePanel, 1.2, 1.0, {
+      color: 0xc8ccd2,
+      roughness: 0.82,
+      metalness: 0.08,
+      envMapIntensity: 0.4,
+      normalScale: new THREE.Vector2(1.2, 1.2),
+    });
+    const jersey = new THREE.Mesh(jerseyGeometry(2.4), bodyMat);
+    jersey.position.set(0, ly, 0);
+    jersey.castShadow = true;
+    jersey.receiveShadow = true;
+    g.add(jersey);
+
+    // Hazard stripe decal along the face
+    const stripeMat = new THREE.MeshStandardMaterial({
+      map: stripeMap ? stripeMap.clone() : null,
+      color: stripeMap ? 0xffffff : useRW ? 0xe8e8e8 : 0xf4c430,
+      roughness: 0.6,
+      metalness: 0.05,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
+    if (stripeMat.map) {
+      stripeMat.map.repeat.set(4, 1);
+      stripeMat.map.needsUpdate = true;
+    }
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.28, 2.35), stripeMat);
+    stripe.position.set(0.48, ly + 0.95, 0);
+    g.add(stripe);
+    const stripeL = stripe.clone();
+    stripeL.position.x = -0.48;
+    g.add(stripeL);
   }
+
   g.userData = {
     type: "barrier",
     level,
@@ -1290,21 +1444,41 @@ function makeBarrier(level, onCeiling = false) {
 function makeCeilingSpike(level) {
   const g = new THREE.Group();
   const cy = ceilingY(level);
+  const panelMat = pbrFrom(maps.concretePanel, 0.8, 0.8, {
+    color: 0xb8bcc4,
+    roughness: 0.75,
+    metalness: 0.12,
+    envMapIntensity: 0.45,
+    normalScale: new THREE.Vector2(1.1, 1.1),
+  });
+  const stripeMat = new THREE.MeshStandardMaterial({
+    map: hazardStripeYB ? hazardStripeYB.clone() : null,
+    color: 0xffffff,
+    roughness: 0.55,
+    metalness: 0.08,
+  });
+  if (stripeMat.map) {
+    stripeMat.map.repeat.set(2, 1);
+    stripeMat.map.needsUpdate = true;
+  }
+  const hangMat = pbrFrom(maps.metal, 0.4, 0.4, {
+    color: 0x555c66,
+    metalness: 0.8,
+    roughness: 0.32,
+  });
+
   for (let i = -1; i <= 1; i++) {
-    const spike = new THREE.Mesh(
-      new THREE.ConeGeometry(0.35, 1.1, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0xf97316,
-        metalness: 0.35,
-        roughness: 0.4,
-        emissive: 0x7c2d12,
-        emissiveIntensity: 0.25,
-      })
-    );
-    spike.rotation.x = Math.PI;
-    spike.position.set(0, cy - 0.55, i * 0.85);
-    spike.castShadow = true;
-    g.add(spike);
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.95, 0.7), panelMat);
+    panel.position.set(0, cy - 0.55, i * 0.85);
+    panel.castShadow = true;
+    g.add(panel);
+    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.28), stripeMat);
+    stripe.position.set(0.28, cy - 0.4, i * 0.85);
+    stripe.rotation.y = Math.PI / 2;
+    g.add(stripe);
+    const hang = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.35, 6), hangMat);
+    hang.position.set(0, cy - 0.08, i * 0.85);
+    g.add(hang);
   }
   g.userData = {
     type: "ceilingSpike",
@@ -1398,6 +1572,77 @@ function createDeckSurface(levelIndex, zCenter) {
     underStripe.position.set(0, ly - 0.92, 0);
     underStripe.castShadow = true;
     g.add(underStripe);
+
+    // Soffit detail: beam ribs, expansion joints, recessed lights
+    const soffitY = ly - 0.55 - 0.02;
+    const beamMat = pbrFrom(maps.concretePanel, 0.4, width / 3, {
+      color: 0xc2c8d0,
+      roughness: 0.78,
+      metalness: 0.12,
+      envMapIntensity: 0.5,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+    });
+    cutawayMats.push(beamMat);
+    const nBeams = QUALITY === "low" ? 4 : 6;
+    for (let i = 0; i < nBeams; i++) {
+      const beam = new THREE.Mesh(
+        new THREE.BoxGeometry(0.28, 0.22, width + 0.35),
+        beamMat
+      );
+      beam.position.set(
+        -SEGMENT_LEN / 2 + 2.5 + i * (SEGMENT_LEN / (nBeams + 0.5)),
+        soffitY - 0.12,
+        0
+      );
+      beam.castShadow = true;
+      g.add(beam);
+    }
+    // Longitudinal rib along centerline
+    const longRib = new THREE.Mesh(
+      new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.16, 0.22),
+      beamMat
+    );
+    longRib.position.set(0, soffitY - 0.1, 0);
+    g.add(longRib);
+
+    const jointMat = new THREE.MeshStandardMaterial({
+      color: 0x3a4048,
+      roughness: 0.9,
+      metalness: 0.05,
+    });
+    for (let i = 1; i < 4; i++) {
+      const joint = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.04, width + 0.5),
+        jointMat
+      );
+      joint.position.set(-SEGMENT_LEN / 2 + i * (SEGMENT_LEN / 4), soffitY - 0.01, 0);
+      g.add(joint);
+    }
+
+    const lightMat = new THREE.MeshStandardMaterial({
+      color: 0xf5f0e0,
+      emissive: 0xffe8b0,
+      emissiveIntensity: 0.55,
+      roughness: 0.35,
+      metalness: 0.2,
+    });
+    const fixtureMat = pbrFrom(maps.metal, 0.4, 0.3, {
+      color: 0x5a6068,
+      metalness: 0.75,
+      roughness: 0.35,
+    });
+    cutawayMats.push(fixtureMat);
+    const nLights = QUALITY === "low" ? 3 : 5;
+    for (let i = 0; i < nLights; i++) {
+      const fx = -SEGMENT_LEN / 2 + 4 + i * ((SEGMENT_LEN - 8) / Math.max(nLights - 1, 1));
+      const housing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.1, 0.35), fixtureMat);
+      housing.position.set(fx, soffitY - 0.08, 0);
+      g.add(housing);
+      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.04, 0.22), lightMat);
+      bulb.position.set(fx, soffitY - 0.14, 0);
+      g.add(bulb);
+    }
+
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xa5f3fc,
       emissive: 0x0891b2,
@@ -1428,6 +1673,34 @@ function createDeckSurface(levelIndex, zCenter) {
     canopy.castShadow = true;
     canopy.receiveShadow = true;
     g.add(canopy);
+
+    // Canopy soffit ribs + lights (visible when inverted on roof)
+    const canBeamMat = pbrFrom(maps.concretePanel, 0.4, width / 3, {
+      color: 0x9aa3ae,
+      roughness: 0.72,
+      metalness: 0.2,
+    });
+    cutawayMats.push(canBeamMat);
+    for (let i = 0; i < 5; i++) {
+      const beam = new THREE.Mesh(
+        new THREE.BoxGeometry(0.24, 0.18, width + 0.8),
+        canBeamMat
+      );
+      beam.position.set(-SEGMENT_LEN / 2 + 3 + i * 5.5, canopyY - 0.28, 0);
+      g.add(beam);
+    }
+    const canLight = new THREE.MeshStandardMaterial({
+      color: 0xfff2d0,
+      emissive: 0xffd090,
+      emissiveIntensity: 0.45,
+      roughness: 0.4,
+    });
+    for (let i = 0; i < 4; i++) {
+      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 0.2), canLight);
+      bulb.position.set(-SEGMENT_LEN / 2 + 5 + i * 6, canopyY - 0.32, 0);
+      g.add(bulb);
+    }
+
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xfda4af,
       emissive: 0x9f1239,
