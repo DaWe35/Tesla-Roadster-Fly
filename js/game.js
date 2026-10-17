@@ -1222,23 +1222,27 @@ function makeTrain(length = 10) {
 function makeBridge(levelY) {
   const g = new THREE.Group();
   // Low clearance arch / beam over the track
-  const beam = new THREE.Mesh(
-    new THREE.BoxGeometry(2.2, 1.0, 8),
-    new THREE.MeshStandardMaterial({
-      color: 0x6c757d,
-      metalness: 0.5,
-      roughness: 0.45,
-    })
-  );
+  const beamMat = pbrFrom(maps.metal, 1.5, 2.5, {
+    color: 0x7a828c,
+    metalness: 0.72,
+    roughness: 0.38,
+    envMapIntensity: 0.95,
+  });
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.0, 8), beamMat);
   beam.position.set(0, levelY + 2.35, 0);
   beam.castShadow = true;
   beam.receiveShadow = true;
   g.add(beam);
 
+  const pillarMat = pbrFrom(maps.concretePanel, 0.8, 2.5, {
+    color: 0xb0b6be,
+    roughness: 0.78,
+    metalness: 0.1,
+  });
   for (const z of [-3.2, 3.2]) {
     const pillar = new THREE.Mesh(
       new THREE.BoxGeometry(1.2, levelY + 2.0, 1.0),
-      new THREE.MeshStandardMaterial({ color: 0x868e96, roughness: 0.6 })
+      pillarMat
     );
     pillar.position.set(0, (levelY + 2.0) / 2, z);
     pillar.castShadow = true;
@@ -1246,14 +1250,22 @@ function makeBridge(levelY) {
   }
 
   // Warning stripes
+  const stripeMaps = [hazardStripeYB, hazardStripeRW];
   for (let i = 0; i < 5; i++) {
+    const sm = stripeMaps[i % 2];
     const stripe = new THREE.Mesh(
       new THREE.BoxGeometry(2.25, 0.15, 0.55),
       new THREE.MeshStandardMaterial({
-        color: i % 2 ? 0xffc107 : 0x212529,
-        roughness: 0.7,
+        map: sm ? sm.clone() : null,
+        color: sm ? 0xffffff : i % 2 ? 0xffc107 : 0x212529,
+        roughness: 0.65,
+        metalness: 0.08,
       })
     );
+    if (stripe.material.map) {
+      stripe.material.map.repeat.set(2, 1);
+      stripe.material.map.needsUpdate = true;
+    }
     stripe.position.set(0, levelY + 1.85, -2 + i * 1.0);
     g.add(stripe);
   }
@@ -1270,32 +1282,26 @@ function makeBridge(levelY) {
 
 function makeTunnel(levelY) {
   const g = new THREE.Group();
-  const arch = new THREE.Mesh(
-    new THREE.BoxGeometry(6, 3.2, 10),
-    new THREE.MeshStandardMaterial({
-      color: 0x495057,
-      metalness: 0.2,
-      roughness: 0.85,
-    })
-  );
-  arch.position.set(0, levelY + 1.6, 0);
-  // Hollow: cut with smaller inner? Use frame pieces instead
-  g.remove(arch);
+  const wallMat = pbrFrom(maps.concreteWall, 2.5, 2.0, {
+    color: 0x6a7078,
+    roughness: 0.88,
+    metalness: 0.08,
+    envMapIntensity: 0.35,
+  });
+  const roofMat = pbrFrom(maps.concretePanel, 2.5, 2.5, {
+    color: 0x4a5058,
+    roughness: 0.82,
+    metalness: 0.12,
+  });
 
   // Walls + roof only
   for (const z of [-4.2, 4.2]) {
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(6, 3.0, 1.2),
-      new THREE.MeshStandardMaterial({ color: 0x343a40, roughness: 0.9 })
-    );
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(6, 3.0, 1.2), wallMat);
     wall.position.set(0, levelY + 1.5, z);
     wall.castShadow = true;
     g.add(wall);
   }
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(6, 0.8, 10),
-    new THREE.MeshStandardMaterial({ color: 0x212529, roughness: 0.8 })
-  );
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(6, 0.8, 10), roofMat);
   roof.position.set(0, levelY + 3.0, 0);
   roof.castShadow = true;
   g.add(roof);
@@ -1583,27 +1589,30 @@ function createDeckSurface(levelIndex, zCenter) {
       normalScale: new THREE.Vector2(1.0, 1.0),
     });
     cutawayMats.push(beamMat);
-    const nBeams = QUALITY === "low" ? 4 : 6;
+    // Deeper ribs so inverted chase cam clearly reads bridge structure
+    const nBeams = QUALITY === "low" ? 5 : 7;
     for (let i = 0; i < nBeams; i++) {
       const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(0.28, 0.22, width + 0.35),
+        new THREE.BoxGeometry(0.38, 0.42, width + 0.45),
         beamMat
       );
       beam.position.set(
-        -SEGMENT_LEN / 2 + 2.5 + i * (SEGMENT_LEN / (nBeams + 0.5)),
-        soffitY - 0.12,
+        -SEGMENT_LEN / 2 + 2.2 + i * (SEGMENT_LEN / (nBeams + 0.35)),
+        soffitY - 0.22,
         0
       );
       beam.castShadow = true;
       g.add(beam);
     }
-    // Longitudinal rib along centerline
-    const longRib = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.16, 0.22),
-      beamMat
-    );
-    longRib.position.set(0, soffitY - 0.1, 0);
-    g.add(longRib);
+    // Twin longitudinal ribs
+    for (const z of [-width * 0.22, width * 0.22]) {
+      const longRib = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.28, 0.32),
+        beamMat
+      );
+      longRib.position.set(0, soffitY - 0.18, z);
+      g.add(longRib);
+    }
 
     const jointMat = new THREE.MeshStandardMaterial({
       color: 0x3a4048,
