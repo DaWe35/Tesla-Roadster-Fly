@@ -3347,6 +3347,7 @@ function exposeAPI() {
       level: state.level,
       inverted: state.inverted,
       y: state.y,
+      x: roadster.position.x,
       roll: state.roll,
       hopping: state.hopping,
       flipping: state.flipping,
