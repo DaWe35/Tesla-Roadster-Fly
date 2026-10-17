@@ -1948,34 +1948,53 @@ function createDeckSurface(levelIndex, zCenter) {
         g.add(pot);
       }
 
-      // Continuous shop frontage wall beyond apron (solid, not cutaway)
-      const frontZ = roadHalf + curbW + walkW + apronW + 0.4;
-      const storeMat = pbrFrom(maps.brick, SEGMENT_LEN / 3, 2.5, {
-        color: 0xa09080,
-        roughness: 0.86,
-        metalness: 0.04,
-        envMapIntensity: 0.22,
-      });
-      const store = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
-        storeMat
-      );
-      store.position.set(0, 1.6, s * frontZ);
-      store.castShadow = true;
-      store.receiveShadow = true;
-      g.add(store);
-      // Simple door/window recesses
-      const winMat = new THREE.MeshStandardMaterial({
-        color: 0x1a2838,
-        emissive: 0x3a6090,
-        emissiveIntensity: 0.35,
-        roughness: 0.3,
-        metalness: 0.2,
-      });
-      for (let i = 0; i < 4; i++) {
-        const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 0.08), winMat);
-        win.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, 1.5, s * (frontZ - s * 0.44));
-        g.add(win);
+      // Shop frontage ONLY on the far side (+Z). Camera chases from −Z — a
+      // continuous wall there walls off the track and fills the foreground.
+      if (s > 0) {
+        const frontZ = roadHalf + curbW + walkW + apronW + 0.4;
+        const storeMat = pbrFrom(maps.brick, SEGMENT_LEN / 3, 2.5, {
+          color: 0xa09080,
+          roughness: 0.86,
+          metalness: 0.04,
+          envMapIntensity: 0.22,
+        });
+        const store = new THREE.Mesh(
+          new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
+          storeMat
+        );
+        store.position.set(0, 1.6, frontZ);
+        store.castShadow = true;
+        store.receiveShadow = true;
+        g.add(store);
+        const winMat = new THREE.MeshStandardMaterial({
+          color: 0x1a2838,
+          emissive: 0x3a6090,
+          emissiveIntensity: 0.35,
+          roughness: 0.3,
+          metalness: 0.2,
+        });
+        for (let i = 0; i < 4; i++) {
+          const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 0.08), winMat);
+          win.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, 1.5, frontZ - 0.44);
+          g.add(win);
+        }
+      } else {
+        // Camera side: open plaza beyond apron (asphalt, fine UV) — no wall
+        const plazaZ = roadHalf + curbW + walkW + apronW + 1.2;
+        const plazaMat = pbrFrom(maps.asphalt, SEGMENT_LEN / 1.2, 2.5 / 1.2, {
+          color: 0x7a7e84,
+          roughness: 0.94,
+          metalness: 0.03,
+          envMapIntensity: 0.12,
+          normalScale: new THREE.Vector2(0.8, 0.8),
+        });
+        const plaza = new THREE.Mesh(
+          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.1, 2.4),
+          plazaMat
+        );
+        plaza.position.set(0, -0.12, -plazaZ);
+        plaza.receiveShadow = true;
+        g.add(plaza);
       }
     }
   }
