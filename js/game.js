@@ -1166,13 +1166,13 @@ function createDeckSurface(levelIndex, zCenter) {
     const cRepX = SEGMENT_LEN / 10;
     const cRepY = width / 5;
     const underMat = new THREE.MeshStandardMaterial({
-      color: levelIndex === 1 ? 0xc5d4e4 : 0xe0c4b0,
+      color: levelIndex === 1 ? 0xd8e4f0 : 0xecd8c8,
       map: cloneMap(maps.concrete.diff, cRepX, cRepY),
       normalMap: cloneMap(maps.concrete.nor, cRepX, cRepY),
       roughnessMap: cloneMap(maps.concrete.rough, cRepX, cRepY),
-      metalness: 0.28,
-      roughness: 0.72,
-      envMapIntensity: 0.45,
+      metalness: 0.18,
+      roughness: 0.78,
+      envMapIntensity: 0.5,
     });
     cutawayMats.push(underMat);
     const under = new THREE.Mesh(
@@ -1251,12 +1251,13 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   const pillarMat = new THREE.MeshStandardMaterial({
-    color: 0xb0b8c4,
+    color: 0xd0d6de,
     map: cloneMap(maps.concrete.diff, 1.5, 3),
     normalMap: cloneMap(maps.concrete.nor, 1.5, 3),
     roughnessMap: cloneMap(maps.concrete.rough, 1.5, 3),
-    roughness: 0.75,
-    metalness: 0.2,
+    roughness: 0.82,
+    metalness: 0.12,
+    envMapIntensity: 0.35,
   });
 
   for (const side of [-1, 1]) {
