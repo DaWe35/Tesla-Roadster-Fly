@@ -1761,19 +1761,23 @@ function updateCamera(dt) {
 
   const backX = portrait ? -9.5 : -7.2;
   const sideZ = portrait ? -17.5 : -13.5;
-  // Slightly below the car (the framing users liked while inverted on the ceiling)
-  const desiredY = state.y - (portrait ? 1.4 : 1.1);
+  // Same low chase character as inverted: close behind, look far ahead.
+  // Inverted: sit just below the car. Upright: sit just above it (never under the road).
+  const inv = state.inverted || state.flipping;
+  const desiredY = inv
+    ? state.y - (portrait ? 1.4 : 1.1)
+    : state.y + (portrait ? 1.7 : 1.4);
   const desired = new THREE.Vector3(
     roadster.position.x + backX,
     desiredY,
     roadster.position.z + sideZ
   );
-  const camFollow = state.inverted || state.flipping ? 0.02 : 0.08;
+  const camFollow = inv ? 0.02 : 0.08;
   camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
   camTarget.set(
     roadster.position.x + (portrait ? 11 : 10),
-    state.y + 0.15,
+    state.y + 0.2,
     0
   );
   camera.lookAt(camTarget);
