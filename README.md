@@ -35,16 +35,16 @@ Cold-gas thrusters flare on hops and flips, and glow while you hang inverted (vi
 ### Tech
 
 - Plain HTML / CSS / JS · three.js r170 at `vendor/three.module.js` (+ `vendor/addons/`, Draco decoder)
-- GLTF Roadster, HDRI sky, PBR asphalt/concrete/brick/facade textures
+- Custom low-poly faceted 2026 Roadster (authored in-engine), HDRI sky, PBR city textures
 - Pages workflow: `.github/workflows/pages.yml`
 
 ### Assets / Credits
 
-Third-party models and textures are listed with licenses in [`assets/CREDITS.md`](assets/CREDITS.md).
+Third-party textures are listed with licenses in [`assets/CREDITS.md`](assets/CREDITS.md).
 
 | Asset | License |
 |-------|---------|
-| Tesla Roadster 2020 (metarex.4d) | CC BY 4.0 |
+| In-engine 2026 Roadster mesh | Original (this project) |
 | Poly Haven HDRI + material textures | CC0 1.0 |
 | three.js | MIT |
 

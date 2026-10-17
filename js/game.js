@@ -1,6 +1,4 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
@@ -471,156 +469,426 @@ const BUILDING_PALETTE = [
   0x8a929c, 0xbca890, 0x9cacb4, 0xa89080, 0xbec4c8,
 ];
 
-/* ── Roadster: placeholder + async GLTF ───────────────────── */
+/* ── Roadster 2026: custom faceted low-poly + cold-gas thrusters ─ */
 /**
- * SpaceX-package rear cold-gas thruster bay (Oct 2026 McGregor press photos):
- * dark matte diffuser bay, 4 primary downward nozzles (−Y) with tip flare,
- * 4 smaller idle ports above, brilliant white vapor (not fire).
+ * Oct 2026 McGregor redesign — no licensed GLB exists, so we author a
+ * faceted wedge supercar (Cybertruck / Countach spirit) in three.js.
+ * Body space: +X = nose / travel, +Y = up, ±Z = lateral.
+ */
+
+function roadsterMats() {
+  const paint = new THREE.MeshPhysicalMaterial({
+    color: 0xeef2f5,
+    metalness: 0.38,
+    roughness: 0.3,
+    clearcoat: QUALITY === "high" ? 0.55 : 0.3,
+    clearcoatRoughness: 0.28,
+    envMapIntensity: 1.15,
+  });
+  const black = new THREE.MeshStandardMaterial({
+    color: 0x0a0b0e,
+    metalness: 0.28,
+    roughness: 0.58,
+    envMapIntensity: 0.45,
+  });
+  const glass = new THREE.MeshPhysicalMaterial({
+    color: 0x0a1420,
+    metalness: 0.05,
+    roughness: 0.06,
+    transparent: true,
+    opacity: QUALITY === "high" ? 0.48 : 0.62,
+    transmission: QUALITY === "high" ? 0.35 : 0,
+    thickness: 0.35,
+    envMapIntensity: 1.6,
+    side: THREE.DoubleSide,
+  });
+  const ledWhite = new THREE.MeshStandardMaterial({
+    color: 0xf5f8ff,
+    emissive: 0xdde8ff,
+    emissiveIntensity: QUALITY === "high" ? 3.5 : 2.2,
+    metalness: 0.2,
+    roughness: 0.25,
+  });
+  const ledRed = new THREE.MeshStandardMaterial({
+    color: 0xff1020,
+    emissive: 0xff2030,
+    emissiveIntensity: QUALITY === "high" ? 3.0 : 1.8,
+    metalness: 0.25,
+    roughness: 0.3,
+  });
+  const brass = new THREE.MeshStandardMaterial({
+    color: 0xc4a35a,
+    metalness: 0.95,
+    roughness: 0.28,
+    envMapIntensity: 1.4,
+  });
+  const tire = new THREE.MeshStandardMaterial({
+    color: 0x0c0c10,
+    roughness: 0.92,
+    metalness: 0.02,
+  });
+  const aero = new THREE.MeshStandardMaterial({
+    color: 0xe8ecf0,
+    metalness: 0.15,
+    roughness: 0.45,
+  });
+  const spoke = new THREE.MeshStandardMaterial({
+    color: 0x1a1c20,
+    metalness: 0.7,
+    roughness: 0.35,
+  });
+  return { paint, black, glass, ledWhite, ledRed, brass, tire, aero, spoke };
+}
+
+/** Faceted wedge body panels via ExtrudeGeometry (XY profile → depth Z). */
+function extrudeProfile(pts, depth, mat) {
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth,
+    bevelEnabled: false,
+    curveSegments: 1,
+  });
+  geo.translate(0, 0, -depth / 2);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function makeStarWheel(mats) {
+  const g = new THREE.Group();
+  const tire = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.1, 8, 18), mats.tire);
+  tire.rotation.y = Math.PI / 2;
+  g.add(tire);
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 16), mats.aero);
+  disc.rotation.z = Math.PI / 2;
+  g.add(disc);
+  for (let i = 0; i < 6; i++) {
+    const sp = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.28, 0.05), mats.spoke);
+    sp.rotation.z = (i * Math.PI) / 3;
+    g.add(sp);
+  }
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.08, 10), mats.spoke);
+  hub.rotation.z = Math.PI / 2;
+  g.add(hub);
+  g.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  return g;
+}
+
+/**
+ * Build the Oct 2026 Roadster: ~4.3 m long, ~1.2 m tall, wide stance.
+ * Returns { model, wheelNodes }.
+ */
+function buildRoadster2026() {
+  const mats = roadsterMats();
+  const model = new THREE.Group();
+  model.name = "tesla-roadster-2026";
+
+  // Main upper body — long pointed nose, cab-forward greenhouse step, flat rear
+  const upper = extrudeProfile(
+    [
+      [2.15, 0.22],
+      [1.55, 0.38],
+      [0.85, 0.48],
+      [0.35, 0.72],
+      [-0.15, 0.98],
+      [-0.85, 1.02],
+      [-1.45, 0.88],
+      [-1.95, 0.55],
+      [-2.1, 0.28],
+      [-2.1, 0.18],
+      [2.05, 0.18],
+    ],
+    1.85,
+    mats.paint
+  );
+  model.add(upper);
+
+  // Lower black cladding / side skirts full length
+  const skirt = extrudeProfile(
+    [
+      [2.05, 0.05],
+      [2.05, 0.2],
+      [-2.05, 0.2],
+      [-2.05, 0.05],
+    ],
+    1.95,
+    mats.black
+  );
+  model.add(skirt);
+
+  // Front splitter
+  const splitter = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 1.9), mats.black);
+  splitter.position.set(2.0, 0.08, 0);
+  splitter.castShadow = true;
+  model.add(splitter);
+
+  // Rear diffuser slab (visible from behind)
+  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 1.7), mats.black);
+  diffuser.position.set(-1.95, 0.12, 0);
+  diffuser.castShadow = true;
+  model.add(diffuser);
+
+  // Wraparound canopy / windscreen
+  const canopy = extrudeProfile(
+    [
+      [0.45, 0.7],
+      [0.05, 1.0],
+      [-0.75, 1.05],
+      [-1.25, 0.92],
+      [-1.15, 0.72],
+      [0.35, 0.68],
+    ],
+    1.55,
+    mats.glass
+  );
+  canopy.position.y = 0.02;
+  model.add(canopy);
+
+  // Angular side windows (flat panes)
+  for (const side of [-1, 1]) {
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.32, 0.04), mats.glass);
+    pane.position.set(-0.35, 0.82, side * 0.94);
+    pane.rotation.y = side * 0.04;
+    model.add(pane);
+  }
+
+  // Sharp C-pillar (body colour)
+  for (const side of [-1, 1]) {
+    const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.45, 0.08), mats.paint);
+    pillar.position.set(-1.15, 0.78, side * 0.9);
+    pillar.rotation.z = 0.35;
+    pillar.castShadow = true;
+    model.add(pillar);
+  }
+
+  // Full-width thin front LED bar + corner headlights
+  const frontBar = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, 1.7), mats.ledWhite);
+  frontBar.position.set(2.12, 0.36, 0);
+  model.add(frontBar);
+  for (const side of [-1, 1]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.14), mats.ledWhite);
+    hl.position.set(2.08, 0.34, side * 0.85);
+    model.add(hl);
+  }
+
+  // Full-width thin red tail bar (under wing)
+  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.04, 1.65), mats.ledRed);
+  tailBar.position.set(-2.08, 0.48, 0);
+  model.add(tailBar);
+
+  // Tall rear wing on struts, body colour, slight upward tilt
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.06, 1.85), mats.paint);
+  wing.position.set(-1.85, 1.12, 0);
+  wing.rotation.z = -0.12;
+  wing.castShadow = true;
+  model.add(wing);
+  for (const side of [-1, 1]) {
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.42, 0.05), mats.paint);
+    strut.position.set(-1.75, 0.88, side * 0.55);
+    strut.castShadow = true;
+    model.add(strut);
+  }
+
+  // Tesla T badge (simple extruded T) on nose
+  const tStem = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.14, 0.03), mats.black);
+  tStem.position.set(2.05, 0.5, 0);
+  model.add(tStem);
+  const tBar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.16), mats.black);
+  tBar.position.set(2.05, 0.56, 0);
+  model.add(tBar);
+
+  // Small rear plate area
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 0.32), mats.black);
+  plate.position.set(-2.12, 0.32, 0);
+  model.add(plate);
+  const plateFace = new THREE.Mesh(
+    new THREE.BoxGeometry(0.01, 0.1, 0.28),
+    new THREE.MeshStandardMaterial({ color: 0xd8dde4, roughness: 0.7 })
+  );
+  plateFace.position.set(-2.145, 0.32, 0);
+  model.add(plateFace);
+
+  // Wheels — black 6-spoke over light aero discs; low-profile tires
+  const wheelNodes = [];
+  const wheelY = 0.32;
+  const places = [
+    ["Wheel_Ft_L", 1.25, wheelY, 0.88],
+    ["Wheel_Ft_R", 1.25, wheelY, -0.88],
+    ["Wheel_Bk_L", -1.25, wheelY, 0.88],
+    ["Wheel_Bk_R", -1.25, wheelY, -0.88],
+  ];
+  for (const [name, x, y, z] of places) {
+    const w = makeStarWheel(mats);
+    w.name = name;
+    w.position.set(x, y, z);
+    model.add(w);
+    wheelNodes.push(w);
+  }
+
+  // Sit tires on y=0
+  model.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(model);
+  model.position.y -= box.min.y;
+
+  return { model, wheelNodes, mats };
+}
+
+/**
+ * Cold-gas thruster hardware matching McGregor press photos:
+ * black rear diffuser with 4 brass-rimmed ports + 4 downward nozzles (2/side).
  */
 function createEmptyThrusterData(body) {
   const thrusterBay = new THREE.Group();
   thrusterBay.name = "thrusterBay";
-  // Placeholder rear-belly placement; refined after GLTF bbox.
-  thrusterBay.position.set(-2.0, 0.12, 0);
+  thrusterBay.position.set(-1.95, 0.1, 0);
   body.add(thrusterBay);
 
   const bayMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1c1e,
-    metalness: 0.55,
-    roughness: 0.78,
+    color: 0x121416,
+    metalness: 0.45,
+    roughness: 0.72,
   });
-  const bayPlate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 1.05), bayMat);
-  bayPlate.position.set(0.05, 0.02, 0);
+  const bayPlate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 1.55), bayMat);
+  bayPlate.position.set(0, 0.02, 0);
   thrusterBay.add(bayPlate);
 
-  const nozzleMat = new THREE.MeshStandardMaterial({
-    color: 0x8a949e,
-    metalness: 0.92,
-    roughness: 0.28,
-  });
-  const flareMat = new THREE.MeshStandardMaterial({
-    color: 0xa8b0b8,
+  const brass = new THREE.MeshStandardMaterial({
+    color: 0xc4a35a,
     metalness: 0.95,
-    roughness: 0.22,
+    roughness: 0.28,
+    envMapIntensity: 1.35,
   });
-  const portRingMat = new THREE.MeshStandardMaterial({
-    color: 0x9aa4ae,
-    metalness: 0.9,
-    roughness: 0.3,
+  const portFill = new THREE.MeshStandardMaterial({
+    color: 0x08090a,
+    metalness: 0.35,
+    roughness: 0.8,
   });
-  const portFillMat = new THREE.MeshStandardMaterial({
-    color: 0x0c0e10,
-    metalness: 0.4,
-    roughness: 0.85,
+  const nozzleMat = new THREE.MeshStandardMaterial({
+    color: 0x3a4048,
+    metalness: 0.85,
+    roughness: 0.35,
+  });
+  const tipMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2e34,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    metalness: 0.7,
+    roughness: 0.4,
   });
 
-  // Primary nozzles: horizontal row across local Z, axis along −Y (body down).
-  // Outer pair slightly larger / more prominent.
-  const primaryZ = [-0.38, -0.15, 0.15, 0.38];
-  const primaryR = [0.055, 0.045, 0.045, 0.055];
-  const nozzles = [];
-  const jetLights = [];
-
-  for (let i = 0; i < 4; i++) {
-    const nz = new THREE.Group();
-    const r = primaryR[i];
-    const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(r * 0.92, r, 0.14, 12),
-      nozzleMat
-    );
-    // Cylinder default axis = +Y; tip (larger radius) toward −Y exit.
-    barrel.position.y = -0.02;
-    nz.add(barrel);
-    const flare = new THREE.Mesh(
-      new THREE.CylinderGeometry(r * 1.35, r * 0.95, 0.045, 12),
-      flareMat
-    );
-    flare.position.y = -0.105;
-    nz.add(flare);
-    nz.position.set(0.02, -0.04, primaryZ[i]);
-    thrusterBay.add(nz);
-    nozzles.push(nz);
-
-    const jet = new THREE.PointLight(0xeef4fa, 0, 3.2);
-    jet.position.set(0.02, -0.16, primaryZ[i]);
-    thrusterBay.add(jet);
-    jetLights.push(jet);
-  }
-
-  // Secondary idle/ports: smaller metallic-rimmed circles above (+Y) and slightly forward (+X).
+  // Rear-facing brass ports (horizontal row on diffuser face) — visual only
   const secondaryPorts = [];
-  const secondaryZ = [-0.34, -0.12, 0.12, 0.34];
+  const portZ = [-0.48, -0.16, 0.16, 0.48];
   for (let i = 0; i < 4; i++) {
     const port = new THREE.Group();
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.028, 0.006, 8, 16),
-      portRingMat
-    );
-    ring.rotation.x = Math.PI / 2;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.012, 8, 20), brass);
+    ring.rotation.y = Math.PI / 2;
     port.add(ring);
-    const fill = new THREE.Mesh(new THREE.CircleGeometry(0.024, 12), portFillMat);
-    fill.rotation.x = -Math.PI / 2;
-    fill.position.y = 0.001;
+    const fill = new THREE.Mesh(new THREE.CircleGeometry(0.048, 14), portFill);
+    fill.rotation.y = Math.PI / 2;
+    fill.position.x = -0.01;
     port.add(fill);
-    port.position.set(0.12, 0.06, secondaryZ[i]);
+    port.position.set(-0.22, 0.02, portZ[i]);
     thrusterBay.add(port);
     secondaryPorts.push(port);
   }
 
-  // Plume groups (API: anyThrustVisible) — short semi-transparent cone cores along −Y.
+  // 4 downward nozzles near rear corners (2 per side) under bumper
+  const nozzles = [];
+  const tipGlows = [];
+  const jetLights = [];
+  const nozzleSpecs = [
+    { z: -0.72, x: 0.05 },
+    { z: -0.42, x: 0.02 },
+    { z: 0.42, x: 0.02 },
+    { z: 0.72, x: 0.05 },
+  ];
+  for (const spec of nozzleSpecs) {
+    const nz = new THREE.Group();
+    const barrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.048, 0.12, 10),
+      nozzleMat
+    );
+    barrel.position.y = -0.02;
+    nz.add(barrel);
+    const tip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.04, 0.04, 10),
+      tipMat.clone()
+    );
+    tip.position.y = -0.1;
+    nz.add(tip);
+    tipGlows.push(tip);
+    nz.position.set(spec.x, -0.05, spec.z);
+    thrusterBay.add(nz);
+    nozzles.push(nz);
+
+    const light = new THREE.PointLight(0xff6020, 0, 2.8);
+    light.position.set(spec.x, -0.14, spec.z);
+    thrusterBay.add(light);
+    jetLights.push(light);
+  }
+
+  // Dense white jet column meshes (shafts) — body −Y
   const plumes = [];
-  const coreMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.55,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
     group.position.copy(nozzles[i].position);
     group.position.y -= 0.12;
     const core = new THREE.Mesh(
-      new THREE.ConeGeometry(0.04, 0.22, 8, 1, true),
-      coreMat.clone()
+      new THREE.CylinderGeometry(0.035, 0.055, 0.85, 8, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+      })
     );
-    // Cone tip along +Y by default; rotate so jet shoots −Y.
-    core.rotation.x = Math.PI;
-    core.position.y = -0.08;
+    core.position.y = -0.4;
     group.add(core);
     group.visible = false;
     thrusterBay.add(group);
-    plumes.push({ group, core, glow: core });
+    plumes.push({ group, core, tip: tipGlows[i] });
   }
 
-  // Soft vapor sprite pool (world-space): core jets + billow cloud
-  const vaporCount = QUALITY === "low" ? 48 : 72;
+  // Soft volumetric sprite pool: 0=jet puff, 1=ground cloud, 2=trail, 3=side puff
+  const vaporCount = QUALITY === "low" ? 64 : 96;
   const vaporSprites = [];
   const vaporLife = new Float32Array(vaporCount);
+  const vaporMax = new Float32Array(vaporCount);
   const vaporVel = new Float32Array(vaporCount * 3);
-  const vaporKind = new Uint8Array(vaporCount); // 0 = core, 1 = billow
-  const vaporMatBase = {
-    map: null,
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0,
-    depthTest: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  };
+  const vaporKind = new Uint8Array(vaporCount);
   for (let i = 0; i < vaporCount; i++) {
-    const mat = new THREE.SpriteMaterial({ ...vaporMatBase });
+    const mat = new THREE.SpriteMaterial({
+      map: null,
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
     const spr = new THREE.Sprite(mat);
     spr.visible = false;
-    spr.scale.set(0.15, 0.15, 0.15);
+    spr.scale.set(0.2, 0.2, 0.2);
     scene.add(spr);
     vaporSprites.push(spr);
     vaporLife[i] = 0;
+    vaporMax[i] = 1;
     vaporKind[i] = 0;
   }
 
-  // Optional subtle Points trail along primary jets
-  const jetCount = 28;
+  // Keep a tiny Points fallback for verify cohesion (mostly unused visually)
+  const jetCount = 8;
   const jetGeo = new THREE.BufferGeometry();
   const jetPos = new Float32Array(jetCount * 3);
   const jetVel = new Float32Array(jetCount * 3);
@@ -634,10 +902,9 @@ function createEmptyThrusterData(body) {
     jetGeo,
     new THREE.PointsMaterial({
       color: 0xffffff,
-      size: 0.08,
+      size: 0.05,
       transparent: true,
       opacity: 0,
-      depthTest: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
@@ -649,6 +916,7 @@ function createEmptyThrusterData(body) {
     thrusterBay,
     nozzles,
     secondaryPorts,
+    tipGlows,
     jetLights,
     plumes,
     jets,
@@ -658,14 +926,17 @@ function createEmptyThrusterData(body) {
     jetCount,
     vaporSprites,
     vaporLife,
+    vaporMax,
     vaporVel,
     vaporKind,
     vaporCount,
     thrustLevel: 0,
     thrustHold: 0,
+    sidePuffT: 0,
     _q: new THREE.Quaternion(),
     _belly: new THREE.Vector3(),
     _side: new THREE.Vector3(),
+    _fwd: new THREE.Vector3(),
     _origin: new THREE.Vector3(),
   };
 }
@@ -684,143 +955,6 @@ function createRoadsterPlaceholder() {
     ...thrust,
   };
   return root;
-}
-
-function enhanceRoadsterMaterials(root) {
-  // Oct 2026 production Roadster (McGregor press): satin silver/white upper + dark lower cladding.
-  // No licensed GLB of that redesign exists yet — restyle the 2020 mesh materials to match.
-  const PAINT = new THREE.Color(0xe8ecf0);
-  root.traverse((child) => {
-    if (!child.isMesh || !child.material) return;
-    child.castShadow = true;
-    child.receiveShadow = true;
-    const list = Array.isArray(child.material) ? child.material : [child.material];
-    const next = list.map((mat) => {
-      if (!mat) return mat;
-      const name = `${mat.name || ""} ${child.name || ""}`.toLowerCase();
-      const color = mat.color ? mat.color.clone() : new THREE.Color(0xffffff);
-      const isGlass =
-        /glass|window|windshield|transpar|canopy|lens|tint/.test(name) ||
-        (mat.transparent && (mat.opacity ?? 1) < 0.95);
-      const isTail =
-        (/tail|rear.?light|glass_rear_lights|stop.?light/.test(name) ||
-          (color.r > 0.55 && color.g < 0.28 && color.b < 0.28 && /light|lamp|glass/.test(name))) &&
-        !/brake_disc|caliper|disc|rim|wheel/.test(name);
-      const isHead =
-        (/head.?light|headlights|drl|aho/.test(name) ||
-          (/indicator/.test(name) && /front|ft|lamp/.test(name))) &&
-        !isTail;
-      const isPaint =
-        /paint|car_main_paint|body_paint/.test(name) ||
-        // Recolor vivid body panels (blue/gold variants) to pearl white
-        (!/glass|carbon|metal|rim|wheel|seat|interior|grill|light|lamp|tyre|tire|thread|sidewall|chrome|mirror|caliper|brake|disc|indicator/.test(
-          name
-        ) &&
-          (color.b > 0.45 && color.b > color.r + 0.08 && color.b > color.g + 0.05));
-      const isCarbon = /carbon/.test(name);
-      const isRubber = /sidewall|thread|tire|tyre|rubber/.test(name);
-      const isRim = /rim|chrome|mirror/.test(name);
-      const isMetal =
-        /metal|grill|non_lustrous|caliper|brake_disc|disc/.test(name) && !isPaint;
-
-      if (isGlass) {
-        return new THREE.MeshPhysicalMaterial({
-          color: /amber/.test(name) ? 0xffb347 : 0x0c1824,
-          metalness: 0.02,
-          roughness: 0.04,
-          transmission: QUALITY === "high" ? 0.78 : 0,
-          thickness: 0.5,
-          transparent: true,
-          opacity: QUALITY === "high" ? 0.42 : 0.65,
-          envMapIntensity: 1.8,
-          side: THREE.DoubleSide,
-        });
-      }
-      if (isHead) {
-        return new THREE.MeshStandardMaterial({
-          color: 0xfff8ec,
-          emissive: 0xffe8b8,
-          emissiveIntensity: QUALITY === "high" ? 3.2 : 1.8,
-          metalness: 0.15,
-          roughness: 0.18,
-          envMapIntensity: 0.5,
-        });
-      }
-      if (isTail) {
-        return new THREE.MeshStandardMaterial({
-          color: 0xc40018,
-          emissive: 0xff2030,
-          emissiveIntensity: QUALITY === "high" ? 2.4 : 1.4,
-          metalness: 0.25,
-          roughness: 0.22,
-          envMapIntensity: 0.6,
-        });
-      }
-      if (isRubber) {
-        return new THREE.MeshStandardMaterial({
-          color: 0x0a0a0c,
-          map: mat.map || null,
-          roughness: 0.92,
-          metalness: 0.02,
-          envMapIntensity: 0.15,
-        });
-      }
-      if (isRim || isMetal) {
-        return new THREE.MeshStandardMaterial({
-          color: isRim ? 0xd8dde6 : color,
-          metalness: 0.92,
-          roughness: isRim ? 0.18 : 0.35,
-          envMapIntensity: 1.25,
-          map: mat.map || null,
-        });
-      }
-      if (isCarbon) {
-        return new THREE.MeshStandardMaterial({
-          color: 0x0a0b0e, // deep black lower aero (2026 diffuser / skirts)
-          map: mat.map || null,
-          roughness: 0.55,
-          metalness: 0.35,
-          envMapIntensity: 0.55,
-        });
-      }
-      if (isPaint) {
-        return new THREE.MeshPhysicalMaterial({
-          color: PAINT,
-          metalness: 0.42,
-          roughness: 0.28, // satin / soft clearcoat like studio press photos
-          clearcoat: QUALITY === "high" ? 0.65 : 0.35,
-          clearcoatRoughness: 0.22,
-          envMapIntensity: 1.25,
-        });
-      }
-      // Leave other materials mostly intact but boost env response
-      if (mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
-        mat.envMapIntensity = Math.max(mat.envMapIntensity || 0, 1.0);
-        mat.needsUpdate = true;
-      }
-      return mat;
-    });
-    child.material = Array.isArray(child.material) ? next : next[0];
-  });
-}
-
-function collectWheelNodes(model) {
-  const byKey = new Map();
-  model.traverse((obj) => {
-    if (!obj.name) return;
-    const m = obj.name.match(/Wheel_(Ft|Bk)_(L|R)/i);
-    if (m) {
-      const norm = `Wheel_${/ft/i.test(m[1]) ? "Ft" : "Bk"}_${m[2].toUpperCase()}`;
-      const prev = byKey.get(norm);
-      // Prefer named transform nodes with children over leaf meshes
-      if (!prev || obj.children.length > prev.children.length) byKey.set(norm, obj);
-      return;
-    }
-    for (const tag of ["Wheel_Ft_L", "Wheel_Ft_R", "Wheel_Bk_L", "Wheel_Bk_R"]) {
-      if (obj.name.includes(tag) && !byKey.has(tag)) byKey.set(tag, obj);
-    }
-  });
-  return [...byKey.values()];
 }
 
 function wrapWheels(nodes, body) {
@@ -843,71 +977,27 @@ function wrapWheels(nodes, body) {
 
 async function loadRoadsterModel(root) {
   const body = root.userData.body;
-  const draco = new DRACOLoader();
-  draco.setDecoderPath("vendor/draco/gltf/");
-  const loader = new GLTFLoader();
-  loader.setDRACOLoader(draco);
+  setLoading(0.55, "Building 2026 Roadster…");
 
-  const gltf = await new Promise((resolve, reject) => {
-    loader.load(
-      "assets/models/tesla-roadster-2020.glb",
-      resolve,
-      (ev) => {
-        if (ev.total) {
-          setLoading(0.45 + 0.4 * (ev.loaded / ev.total), "Loading Roadster…");
-        }
-      },
-      reject
-    );
-  });
-
-  const model = gltf.scene;
-  model.name = "tesla-roadster-2020";
-
-  // Model forward = +Z → game forward +X (θ=+π/2). −π/2 faced the car backwards.
-  model.rotation.y = Math.PI / 2;
-
-  // Fit length along X to ~4.2 units
-  model.updateMatrixWorld(true);
-  const box0 = new THREE.Box3().setFromObject(model);
-  const size0 = box0.getSize(new THREE.Vector3());
-  // After Y rot, length is along X ≈ original Z extent
-  const length = Math.max(size0.x, size0.z);
-  let scale = 4.55 / length;
-  scale = THREE.MathUtils.clamp(scale, 0.92, 1.12);
-  model.scale.setScalar(scale);
-
-  model.updateMatrixWorld(true);
-  const box1 = new THREE.Box3().setFromObject(model);
-  // Sit wheels on ground (min Y → 0 in body space). Model is not yet under body.
-  model.position.y -= box1.min.y;
-
+  const { model, wheelNodes } = buildRoadster2026();
   body.add(model);
   model.updateMatrixWorld(true);
 
-  enhanceRoadsterMaterials(model);
-
-  // Optional headlight point lights
   if (QUALITY === "high") {
     for (const side of [-1, 1]) {
-      const glow = new THREE.PointLight(0xfff0c8, 0.4, 6);
-      glow.position.set(2.1, 0.45, side * 0.55);
+      const glow = new THREE.PointLight(0xfff0c8, 0.35, 5);
+      glow.position.set(2.05, 0.4, side * 0.7);
       body.add(glow);
     }
   }
 
   let wheels = [];
   try {
-    const nodes = collectWheelNodes(model);
-    if (nodes.length) {
-      wheels = wrapWheels(nodes, body);
-    }
+    wheels = wrapWheels(wheelNodes, body);
   } catch (err) {
-    console.warn("Wheel wrap failed — spin disabled", err);
-    wheels = [];
+    console.warn("Wheel wrap failed", err);
   }
 
-  // Bind soft-particle map now that textures are loaded
   if (maps.softParticle) {
     for (const spr of root.userData.vaporSprites) {
       spr.material.map = maps.softParticle;
@@ -915,45 +1005,21 @@ async function loadRoadsterModel(root) {
     }
   }
 
-  // SpaceX-package thruster bay: real rear = min X after +π/2 (nose = +X)
+  // Thruster bay at rear underside (min X)
   model.updateMatrixWorld(true);
   const boxBody = new THREE.Box3().setFromObject(model);
   const bay = root.userData.thrusterBay;
   if (bay) {
-    bay.position.set(boxBody.min.x + 0.22, boxBody.min.y + 0.06, 0);
+    bay.position.set(boxBody.min.x + 0.28, boxBody.min.y + 0.14, 0);
   }
-  // Headlight glows at the nose (+X)
-  body.traverse((o) => {
-    if (o.isPointLight && o.color && o.color.getHex() === 0xfff0c8) {
-      o.position.x = Math.abs(o.position.x) || 2.1;
-    }
-  });
-  // Primary nozzles: horizontal row across rear (local Z), pointing −Y
-  const primaryZ = [-0.38, -0.15, 0.15, 0.38];
-  root.userData.nozzles.forEach((nz, i) => {
-    nz.position.set(0.02, -0.04, primaryZ[i]);
-  });
-  root.userData.jetLights.forEach((light, i) => {
-    light.position.set(0.02, -0.16, primaryZ[i]);
-  });
-  root.userData.plumes.forEach((p, i) => {
-    p.group.position.set(0.02, -0.16, primaryZ[i]);
-  });
-  // Secondary ports: slightly higher (+Y) and forward (+X)
-  const secondaryZ = [-0.34, -0.12, 0.12, 0.34];
-  (root.userData.secondaryPorts || []).forEach((port, i) => {
-    port.position.set(0.14, 0.07, secondaryZ[i]);
-  });
 
   const height = boxBody.max.y - boxBody.min.y;
-  CAR_CLEARANCE = THREE.MathUtils.clamp(height * 0.95, 1.0, 1.15);
+  CAR_CLEARANCE = THREE.MathUtils.clamp(height * 0.92, 1.0, 1.15);
 
   root.userData.wheels = wheels;
   root.userData.model = model;
   root.userData.ready = true;
   root.userData._height = height;
-
-  draco.dispose();
   return root;
 }
 
@@ -1812,65 +1878,125 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex === 0) {
-    // Sidewalk sits clearly ABOVE ground strips (y≈−0.05) to avoid z-fighting
-    const walkMat = pbrFrom(maps.cobble, SEGMENT_LEN / 5, 1.4, {
-      color: 0xc4c0b8,
+    // Street edge: raised curb (vertical face) → paved sidewalk → frontage apron.
+    // All Ys distinct from road top (ly+0.02) and from ground strips (y≤−0.3).
+    // UV scale ≈ real-world: cobble ~0.2 m tiles, concrete panels ~1 m.
+    const roadHalf = width / 2; // 5.0
+    const curbW = 0.22;
+    const walkW = 2.0;
+    const apronW = 1.6;
+    const curbTop = ly + 0.22;
+    const walkTop = ly + 0.18;
+    const apronTop = ly - 0.02;
+
+    const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 4, 0.5, {
+      color: 0xc2c0ba,
+      roughness: 0.92,
+      metalness: 0.03,
+      envMapIntensity: 0.15,
+      normalScale: new THREE.Vector2(0.8, 0.8),
+    });
+    // Cobble: ~0.22 m stones → ~SEGMENT_LEN/0.22 repeats along X, walkW/0.22 along Z
+    const walkMat = pbrFrom(maps.cobble, SEGMENT_LEN / 0.22, walkW / 0.22, {
+      color: 0xb8b4ac,
+      roughness: 0.9,
+      metalness: 0.03,
+      envMapIntensity: 0.18,
+      normalScale: new THREE.Vector2(1.1, 1.1),
+    });
+    const apronMat = pbrFrom(maps.concretePanel, SEGMENT_LEN / 2.5, apronW / 1.2, {
+      color: 0xa8a49c,
       roughness: 0.88,
       metalness: 0.04,
-      envMapIntensity: 0.22,
-      normalScale: new THREE.Vector2(1.3, 1.3),
+      envMapIntensity: 0.2,
+      normalScale: new THREE.Vector2(0.9, 0.9),
     });
-    walkMat.polygonOffset = true;
-    walkMat.polygonOffsetFactor = -1;
-    walkMat.polygonOffsetUnits = -1;
-    // Do NOT put walk/curb mats in cutawayMats — they must stay opaque
     const potMat = pbrFrom(maps.concreteWall, 1, 1, {
-      color: 0xc8c0b4,
-      roughness: 0.88,
-      metalness: 0.05,
-      envMapIntensity: 0.22,
+      color: 0xb0aaa0,
+      roughness: 0.9,
+      metalness: 0.04,
+      envMapIntensity: 0.18,
     });
-    const walkH = 0.28;
-    const walkTop = ly + 0.2;
-    const walkZ = 6.7; // clear of road curb (|z|=5) and ground shoulder (~9.2)
+
     for (const side of [-1, 1]) {
+      const s = side;
+      // Curb block with visible vertical face toward the road
+      const curb = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, curbTop - (ly - 0.05), curbW),
+        curbMat
+      );
+      curb.position.set(
+        0,
+        (curbTop + (ly - 0.05)) / 2,
+        s * (roadHalf + curbW / 2)
+      );
+      curb.castShadow = true;
+      curb.receiveShadow = true;
+      g.add(curb);
+
+      // Paved sidewalk — top clearly above apron, no shared plane with ground fill
       const walk = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, walkH, 1.4),
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.14, walkW),
         walkMat
       );
-      walk.position.set(0, walkTop - walkH / 2, side * walkZ);
-      walk.receiveShadow = true;
+      walk.position.set(
+        0,
+        walkTop - 0.07,
+        s * (roadHalf + curbW + walkW / 2)
+      );
       walk.castShadow = true;
+      walk.receiveShadow = true;
       g.add(walk);
 
-      // Curb lip between road shoulder and sidewalk (distinct height)
-      const lipMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 0.3, {
-        color: 0xb8b4ac,
-        roughness: 0.92,
-        metalness: 0.04,
-      });
-      lipMat.polygonOffset = true;
-      lipMat.polygonOffsetFactor = -2;
-      lipMat.polygonOffsetUnits = -2;
-      const lip = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN, 0.16, 0.2),
-        lipMat
+      // Building-frontage apron (concrete), lower than sidewalk
+      const apron = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.1, apronW),
+        apronMat
       );
-      lip.position.set(0, ly + 0.08, side * 5.4);
-      lip.receiveShadow = true;
-      g.add(lip);
+      apron.position.set(
+        0,
+        apronTop - 0.05,
+        s * (roadHalf + curbW + walkW + apronW / 2)
+      );
+      apron.receiveShadow = true;
+      g.add(apron);
 
-      // Planters sit flush on sidewalk (light concrete, not dark floating cubes)
+      // Planters on sidewalk top only
       for (let i = 0; i < 3; i++) {
-        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.38, 0.48), potMat);
+        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.32, 0.4), potMat);
         pot.position.set(
           -SEGMENT_LEN / 2 + 5 + i * 8,
-          walkTop + 0.19,
-          side * walkZ
+          walkTop + 0.16,
+          s * (roadHalf + curbW + walkW / 2)
         );
         pot.castShadow = true;
         pot.receiveShadow = true;
         g.add(pot);
+      }
+
+      // Low shop frontage wall beyond apron (not in cutawayMats — stays solid)
+      const frontZ = roadHalf + curbW + walkW + apronW + 0.35;
+      const storeMat = pbrFrom(maps.brick, 2.5, 2.0, {
+        color: 0xa89888,
+        roughness: 0.85,
+        metalness: 0.05,
+        envMapIntensity: 0.25,
+      });
+      for (let i = 0; i < 3; i++) {
+        const storeW = 6.5;
+        const storeH = 2.4 + (i % 2) * 0.8;
+        const store = new THREE.Mesh(
+          new THREE.BoxGeometry(storeW, storeH, 0.7),
+          storeMat
+        );
+        store.position.set(
+          -SEGMENT_LEN / 2 + 5 + i * 9,
+          storeH / 2,
+          s * frontZ
+        );
+        store.castShadow = true;
+        store.receiveShadow = true;
+        g.add(store);
       }
     }
   }
@@ -1883,65 +2009,33 @@ function createDeckSurface(levelIndex, zCenter) {
 
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
-  // Wide terrain under/beside the corridor so chase-cam never sees empty void
-  // Ground well below sidewalk (walk top ≈ 0.14) — no coplanar flicker
-  // Keep ground fill away from sidewalk |z|≈6.55 — leave a clear air gap
+  // Street apron ends ~|z|=8.8. Ground fill starts beyond |z|≥10, well BELOW apron (y≤−0.35).
+  // Fine asphalt near camera (not giant gravel noise). Coarse fill only far out.
   const strips = [
-    { src: maps.gravel, z: -34, depth: 22, color: 0x8a8678, y: -0.28 },
-    { src: maps.dirt, z: 32, depth: 22, color: 0x7a6a55, y: -0.28 },
-    { src: maps.gravel, z: -18, depth: 6, color: 0x8c887c, y: -0.26 },
-    { src: maps.gravel, z: 18, depth: 6, color: 0x8c887c, y: -0.26 },
+    // Camera-side corridor: fine asphalt, scaled ~1.5 m tiles
+    { src: maps.asphalt, z: -14, depth: 8, color: 0x7a7e86, y: -0.38, rx: SEGMENT_LEN / 1.5, ry: 8 / 1.5 },
+    // Far camera-side fill
+    { src: maps.gravel, z: -28, depth: 16, color: 0x8a8678, y: -0.4, rx: SEGMENT_LEN / 1.2, ry: 16 / 1.2 },
+    // Far side of track
+    { src: maps.asphalt, z: 14, depth: 8, color: 0x7a7e86, y: -0.38, rx: SEGMENT_LEN / 1.5, ry: 8 / 1.5 },
+    { src: maps.dirt, z: 28, depth: 16, color: 0x7a6a55, y: -0.4, rx: SEGMENT_LEN / 1.2, ry: 16 / 1.2 },
   ];
   for (const s of strips) {
-    const mat = pbrFrom(s.src, SEGMENT_LEN / 5, s.depth / 4, {
+    const mat = pbrFrom(s.src, s.rx, s.ry, {
       color: s.color,
       roughness: 0.95,
       metalness: 0.02,
-      envMapIntensity: 0.15,
-      normalScale: new THREE.Vector2(1.4, 1.4),
+      envMapIntensity: 0.12,
+      normalScale: new THREE.Vector2(1.0, 1.0),
     });
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = 2;
-    mat.polygonOffsetUnits = 2;
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.18, s.depth),
+      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.16, s.depth),
       mat
     );
     mesh.position.set(0, s.y, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
   }
-  // Shoulder below sidewalk (no cobble) so walk edge never shares a plane with ground
-  const shoulderMat = pbrFrom(maps.gravel, SEGMENT_LEN / 5, 1, {
-    color: 0x7a7870,
-    roughness: 0.97,
-    metalness: 0.02,
-    envMapIntensity: 0.1,
-  });
-  shoulderMat.polygonOffset = true;
-  shoulderMat.polygonOffsetFactor = 3;
-  shoulderMat.polygonOffsetUnits = 3;
-  for (const side of [-1, 1]) {
-    const shoulder = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.12, 2.2),
-      shoulderMat
-    );
-    shoulder.position.set(0, -0.32, side * 9.2);
-    shoulder.receiveShadow = true;
-    g.add(shoulder);
-  }
-  // Plaza far from sidewalk (walk at |z|≈6.55) to avoid edge z-fight
-  const plazaMat = pbrFrom(maps.cobble, 4, 4, {
-    color: 0xb0aaa0,
-    roughness: 0.9,
-    metalness: 0.03,
-    envMapIntensity: 0.2,
-    normalScale: new THREE.Vector2(1.2, 1.2),
-  });
-  const plaza = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 6), plazaMat);
-  plaza.position.set(-SEGMENT_LEN / 4, -0.18, -20);
-  plaza.receiveShadow = true;
-  g.add(plaza);
 
   g.position.x = zCenter;
   g.userData.isGroundStrip = true;
@@ -1950,10 +2044,10 @@ function createGroundStrip(zCenter) {
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
-  // Camera chases from negative Z. Keep that side well clear of the
-  // corridor between camera (~-12..-17) and the track (z=0).
-  const CAM_SIDE_CLEAR = 22; // |z| floor on camera side
-  const FAR_SIDE_MIN = 9;
+  // Camera chases from negative Z. Buildings start just past the street apron (~9)
+  // so the chase cam sees shop frontage, not empty gravel.
+  const CAM_SIDE_CLEAR = 11;
+  const FAR_SIDE_MIN = 10;
   for (const side of [-1, 1]) {
     let x = -SEGMENT_LEN / 2 + 2;
     while (x < SEGMENT_LEN / 2 - 2) {
@@ -2022,26 +2116,28 @@ function createCityBlock(zCenter) {
   return g;
 }
 
-/** Continuous scrolling ground slab that tracks the car along X. */
+/** Continuous scrolling ground that tracks the car along X.
+ *  Must NOT cover the street edge (curb/sidewalk/apron ~|z|<9) — that caused
+ *  the giant gravel foreground + curb z-fighting. */
 let terrainFollow = null;
 function ensureTerrainFollow() {
   if (terrainFollow) return terrainFollow;
   const g = new THREE.Group();
+  // Far fill only — fine UV (~1.2 m tiles), deep below street (y=−0.55)
   const slabs = [
-    { src: maps.gravel, z: -22, w: 90, d: 48, color: 0x858074 },
-    { src: maps.dirt, z: 24, w: 90, d: 44, color: 0x6e5e4a },
-    { src: maps.cobble, z: 0, w: 90, d: 18, color: 0x7a7670 }, // under-street continuum
+    { src: maps.asphalt, z: -26, w: 100, d: 28, color: 0x6e7278 },
+    { src: maps.dirt, z: 26, w: 100, d: 28, color: 0x6e5e4a },
   ];
   for (const s of slabs) {
-    const mat = pbrFrom(s.src, s.w / 6, s.d / 4, {
+    const mat = pbrFrom(s.src, s.w / 1.2, s.d / 1.2, {
       color: s.color,
       roughness: 0.96,
       metalness: 0.02,
-      envMapIntensity: 0.12,
-      normalScale: new THREE.Vector2(1.5, 1.5),
+      envMapIntensity: 0.1,
+      normalScale: new THREE.Vector2(1.0, 1.0),
     });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.1, s.d), mat);
-    mesh.position.set(0, -0.06, s.z);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.12, s.d), mat);
+    mesh.position.set(0, -0.55, s.z);
     mesh.receiveShadow = true;
     g.add(mesh);
   }
@@ -2406,6 +2502,7 @@ function beginFlip() {
   state.flipToY = surfaceY(state.level, state.inverted);
   state.flipToRoll = state.inverted ? Math.PI : 0;
   burstThrusters(1, 0.65);
+  roadster.userData.sidePuffT = 0.4;
   return true;
 }
 
@@ -2590,13 +2687,16 @@ function updateTrains(dt) {
 
 
 /**
- * Thrusters (visual only). Brilliant opaque white cold-gas vapor —
- * tight high-pressure core at nozzle → billowy dry-ice cloud (no fire/orange).
+ * Thrusters (visual only) — McGregor press look:
+ * dense opaque white jet columns, red-hot tips, ground/ceiling impact clouds,
+ * lingering world-space trails, lateral side puffs on flips.
+ * kind: 0=jet puff along column, 1=ground/ceiling cloud, 2=trail, 3=side puff
  */
 function burstThrusters(amount = 1, hold = 0.45) {
   const ud = roadster.userData;
   ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
   ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
+  if (state.flipping) ud.sidePuffT = Math.max(ud.sidePuffT || 0, 0.35);
 }
 
 function claimVaporSlot(ud) {
@@ -2607,75 +2707,33 @@ function claimVaporSlot(ud) {
   return -1;
 }
 
-/** kind: 0 = tight core jet, 1 = billowy expansion cloud */
-function spawnVapor(ud, lvl, kind = 1) {
-  const {
-    vaporSprites,
-    vaporLife,
-    vaporVel,
-    vaporKind,
-    nozzles,
-    _belly,
-    _side,
-    _origin,
-  } = ud;
-  if (!vaporSprites || !vaporSprites.length) return;
+function spawnVaporAt(ud, kind, x, y, z, vx, vy, vz, scale, life, opacity = 0.9) {
   const slot = claimVaporSlot(ud);
   if (slot < 0) return;
-
-  const nz = nozzles[slot % nozzles.length];
-  nz.getWorldPosition(_origin);
-  // Emit from nozzle tip (slightly along −Y / belly)
-  _origin.addScaledVector(_belly, 0.06);
-
-  const spr = vaporSprites[slot];
-  vaporKind[slot] = kind;
-
-  if (kind === 0) {
-    // Core: small bright white, high speed along belly, short life, little spread
-    spr.position.set(
-      _origin.x + (Math.random() - 0.5) * 0.04,
-      _origin.y + (Math.random() - 0.5) * 0.03,
-      _origin.z + (Math.random() - 0.5) * 0.04
-    );
-    const jetSpeed = 5.5 + lvl * 5.5;
-    vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.55;
-    vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * 0.25;
-    vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * 0.25;
-    vaporLife[slot] = 0.1 + Math.random() * 0.08;
-    spr.scale.setScalar(0.12 + lvl * 0.08);
-    spr.material.opacity = 0.95 + lvl * 0.05;
-    spr.material.color.setHex(0xffffff);
-    spr.material.blending = THREE.AdditiveBlending;
-  } else {
-    // Billow: larger, slower, expands fast — sideways scatter late in life (update)
-    spr.position.set(
-      _origin.x + (Math.random() - 0.5) * 0.12,
-      _origin.y + (Math.random() - 0.5) * 0.08,
-      _origin.z + (Math.random() - 0.5) * 0.12
-    );
-    const jetSpeed = 1.6 + lvl * 2.4;
-    const scatter = 0.35 + lvl * 0.25;
-    vaporVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.7 + (Math.random() - 0.5) * scatter;
-    vaporVel[slot * 3 + 1] = _belly.y * jetSpeed + (Math.random() - 0.5) * scatter * 0.6;
-    vaporVel[slot * 3 + 2] = _belly.z * jetSpeed + (Math.random() - 0.5) * scatter;
-    vaporLife[slot] = 0.45 + Math.random() * 0.35;
-    spr.scale.setScalar(0.35 + lvl * 0.35);
-    spr.material.opacity = 0.75 + lvl * 0.25;
-    spr.material.color.setHex(Math.random() > 0.35 ? 0xffffff : 0xeef2f6);
-    spr.material.blending = THREE.NormalBlending;
-  }
+  const spr = ud.vaporSprites[slot];
+  ud.vaporKind[slot] = kind;
+  ud.vaporLife[slot] = life;
+  ud.vaporMax[slot] = life;
+  ud.vaporVel[slot * 3] = vx;
+  ud.vaporVel[slot * 3 + 1] = vy;
+  ud.vaporVel[slot * 3 + 2] = vz;
+  spr.position.set(x, y, z);
+  spr.scale.setScalar(scale);
+  spr.material.opacity = opacity;
+  spr.material.color.setHex(0xffffff);
+  spr.material.blending = THREE.NormalBlending;
   spr.visible = true;
 }
 
 function updateThrusters(dt) {
   const ud = roadster.userData;
   if (ud.thrustHold > 0) ud.thrustHold -= dt;
+  if (ud.sidePuffT > 0) ud.sidePuffT -= dt;
 
   let target = 0;
   if (state.hopping || state.flipping) target = 1;
-  else if (ud.thrustHold > 0) target = 0.9;
-  else if (state.inverted && state.running && !state.dead) target = 0.7;
+  else if (ud.thrustHold > 0) target = 0.95;
+  else if (state.inverted && state.running && !state.dead) target = 0.75;
 
   if (target >= (ud.thrustLevel || 0)) {
     ud.thrustLevel = THREE.MathUtils.lerp(ud.thrustLevel || 0, target, 1 - Math.pow(0.002, dt));
@@ -2685,68 +2743,148 @@ function updateThrusters(dt) {
   const lvl = ud.thrustLevel || 0;
   const active = lvl > 0.04;
 
-  for (const light of ud.jetLights) {
-    light.intensity = active ? 0.2 + lvl * 0.55 : 0;
-    light.distance = 2.4 + lvl * 1.2;
-    light.color.setHex(0xeef4fa);
-  }
-
-  ud.plumes.forEach((p) => {
-    p.group.visible = active;
-    if (p.core?.material) {
-      p.core.material.opacity = active ? 0.35 + lvl * 0.4 : 0;
-    }
-  });
-
-  const { jetPos, jetVel, jetLife, jetCount, jets, body, _q, _belly, _side, _origin } = ud;
+  const { body, _q, _belly, _side, _fwd, _origin } = ud;
   body.updateWorldMatrix(true, false);
   body.getWorldQuaternion(_q);
   _belly.set(0, -1, 0).applyQuaternion(_q);
   _side.set(0, 0, 1).applyQuaternion(_q);
+  _fwd.set(1, 0, 0).applyQuaternion(_q);
 
-  if (active) {
-    const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
-    const invertedSustain = state.inverted && state.running && !state.dead;
-    // More spawn during hop/flip burst; sustained when inverted
-    const coreN = burst ? (QUALITY === "low" ? 2 : 3) : invertedSustain ? 1 : 1;
-    const billowN = burst
-      ? QUALITY === "low"
-        ? 2
-        : 4
-      : invertedSustain
-        ? QUALITY === "low"
-          ? 1
-          : 2
-        : 1;
-    for (let s = 0; s < coreN; s++) spawnVapor(ud, lvl, 0);
-    for (let s = 0; s < billowN; s++) spawnVapor(ud, lvl, 1);
-
-    // Subtle points along primary jets
-    for (let s = 0; s < (burst ? 2 : 1); s++) {
-      let slot = -1;
-      for (let i = 0; i < jetCount; i++) {
-        if (jetLife[i] <= 0) {
-          slot = i;
-          break;
-        }
-      }
-      if (slot < 0) continue;
-      const nz = ud.nozzles[s % ud.nozzles.length];
-      nz.getWorldPosition(_origin);
-      _origin.addScaledVector(_belly, 0.05);
-      jetPos[slot * 3] = _origin.x;
-      jetPos[slot * 3 + 1] = _origin.y;
-      jetPos[slot * 3 + 2] = _origin.z;
-      const jetSpeed = 4.5 + lvl * 4;
-      jetVel[slot * 3] = _belly.x * jetSpeed + state.speed * 0.75;
-      jetVel[slot * 3 + 1] = _belly.y * jetSpeed;
-      jetVel[slot * 3 + 2] = _belly.z * jetSpeed;
-      jetLife[slot] = 0.08 + Math.random() * 0.06;
+  // Red/orange hot tips + lights while firing
+  for (let i = 0; i < ud.jetLights.length; i++) {
+    const light = ud.jetLights[i];
+    light.intensity = active ? 0.5 + lvl * 1.4 : 0;
+    light.distance = 2.2 + lvl * 1.5;
+    light.color.setHex(0xff4a18);
+    const tip = ud.tipGlows?.[i];
+    if (tip?.material) {
+      tip.material.emissive.setHex(active ? 0xff3a10 : 0x000000);
+      tip.material.emissiveIntensity = active ? 1.2 + lvl * 2.5 : 0;
+      tip.material.color.setHex(active ? 0xff6020 : 0x2a2e34);
     }
   }
 
-  // Update vapor sprites — core stays tight; billow expands + sideways near end of life
-  const { vaporSprites, vaporLife, vaporVel, vaporKind, vaporCount } = ud;
+  // Dense white jet columns (opaque shafts)
+  const colLen = 0.55 + lvl * 0.55;
+  ud.plumes.forEach((p) => {
+    p.group.visible = active;
+    if (p.core) {
+      p.core.scale.set(1, colLen / 0.85, 1);
+      p.core.position.y = -colLen * 0.5;
+      if (p.core.material) {
+        p.core.material.opacity = active ? 0.72 + lvl * 0.28 : 0;
+      }
+    }
+  });
+
+  if (active) {
+    const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
+    const sustain = state.inverted && state.running && !state.dead;
+
+    // Jet-column puffs along belly direction
+    const jetN = burst ? (QUALITY === "low" ? 2 : 3) : 1;
+    for (let s = 0; s < jetN; s++) {
+      const nz = ud.nozzles[s % ud.nozzles.length];
+      nz.getWorldPosition(_origin);
+      _origin.addScaledVector(_belly, 0.08 + Math.random() * colLen * 0.5);
+      const spd = 2.5 + lvl * 3;
+      spawnVaporAt(
+        ud,
+        0,
+        _origin.x,
+        _origin.y,
+        _origin.z,
+        _belly.x * spd + _fwd.x * state.speed * 0.15,
+        _belly.y * spd,
+        _belly.z * spd + _fwd.z * state.speed * 0.15,
+        0.18 + lvl * 0.12,
+        0.12 + Math.random() * 0.08,
+        0.95
+      );
+    }
+
+    // Ground / ceiling impact cloud — spawn ON the road surface the jets hit
+    const surfY = surfaceY(state.level, state.inverted);
+    // Surface the belly faces: upright → floor; inverted → ceiling
+    const impactY = state.inverted ? surfY + CAR_CLEARANCE * 0.15 : surfY + 0.04;
+    const nearSurf =
+      Math.abs(roadster.position.y - (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))) < 1.6;
+    if (nearSurf || sustain || burst) {
+      const cloudN = burst ? (QUALITY === "low" ? 2 : 4) : sustain ? 2 : 1;
+      for (let s = 0; s < cloudN; s++) {
+        const nz = ud.nozzles[s % ud.nozzles.length];
+        nz.getWorldPosition(_origin);
+        // Project onto surface along belly, then spread sideways
+        const px = _origin.x + (Math.random() - 0.5) * 0.5 + _fwd.x * 0.2;
+        const pz = _origin.z + (Math.random() - 0.5) * 0.9;
+        const py = impactY + (Math.random() - 0.5) * 0.06;
+        const spread = 1.2 + lvl * 1.8;
+        spawnVaporAt(
+          ud,
+          1,
+          px,
+          py,
+          pz,
+          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.35,
+          (Math.random() - 0.5) * 0.15,
+          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.35,
+          0.55 + lvl * 0.7,
+          0.7 + Math.random() * 0.55,
+          0.85
+        );
+      }
+    }
+
+    // Lingering world-space smoke trails behind the car
+    if (burst || sustain) {
+      const trailN = QUALITY === "low" ? 1 : 2;
+      for (let s = 0; s < trailN; s++) {
+        const nz = ud.nozzles[s % ud.nozzles.length];
+        nz.getWorldPosition(_origin);
+        _origin.addScaledVector(_belly, 0.2);
+        spawnVaporAt(
+          ud,
+          2,
+          _origin.x - _fwd.x * 0.3,
+          _origin.y,
+          _origin.z - _fwd.z * 0.3,
+          -_fwd.x * state.speed * 0.2 + (Math.random() - 0.5) * 0.3,
+          _belly.y * 0.4 + (Math.random() - 0.5) * 0.2,
+          -_fwd.z * state.speed * 0.2 + (Math.random() - 0.5) * 0.3,
+          0.45 + Math.random() * 0.35,
+          1.1 + Math.random() * 0.9,
+          0.65
+        );
+      }
+    }
+  }
+
+  // Lateral side puffs on flips
+  if (ud.sidePuffT > 0) {
+    const n = QUALITY === "low" ? 1 : 2;
+    for (let s = 0; s < n; s++) {
+      const sideSign = s % 2 === 0 ? 1 : -1;
+      roadster.getWorldPosition(_origin);
+      _origin.addScaledVector(_side, sideSign * 1.0);
+      _origin.y += (Math.random() - 0.5) * 0.3;
+      spawnVaporAt(
+        ud,
+        3,
+        _origin.x,
+        _origin.y,
+        _origin.z,
+        _side.x * sideSign * (3 + Math.random() * 2) + _fwd.x * state.speed * 0.4,
+        (Math.random() - 0.3) * 1.2,
+        _side.z * sideSign * (3 + Math.random() * 2),
+        0.35 + Math.random() * 0.25,
+        0.45 + Math.random() * 0.25,
+        0.8
+      );
+    }
+  }
+
+  // Integrate sprites
+  const { vaporSprites, vaporLife, vaporMax, vaporVel, vaporKind, vaporCount } = ud;
   for (let i = 0; i < vaporCount; i++) {
     if (vaporLife[i] <= 0) {
       vaporSprites[i].visible = false;
@@ -2754,32 +2892,36 @@ function updateThrusters(dt) {
     }
     vaporLife[i] -= dt;
     const spr = vaporSprites[i];
-    const isCore = vaporKind[i] === 0;
-    const lifeLeft = vaporLife[i];
-
-    if (!isCore && lifeLeft < 0.22) {
-      // Near end of life / near ground: billow outward like dry-ice fog
-      const push = (0.22 - lifeLeft) * 4.5;
-      vaporVel[i * 3] += _side.x * (Math.random() - 0.5) * push * dt * 8;
-      vaporVel[i * 3 + 1] += (Math.random() - 0.5) * push * dt * 3;
-      vaporVel[i * 3 + 2] += _side.z * (Math.random() - 0.5) * push * dt * 8;
-      // Soften downward drift so fog pools
-      vaporVel[i * 3] *= 1 - dt * 0.8;
-      vaporVel[i * 3 + 1] *= 1 - dt * 1.2;
-      vaporVel[i * 3 + 2] *= 1 - dt * 0.8;
-    }
+    const kind = vaporKind[i];
+    const t = 1 - vaporLife[i] / Math.max(0.001, vaporMax[i]);
 
     spr.position.x += vaporVel[i * 3] * dt;
     spr.position.y += vaporVel[i * 3 + 1] * dt;
     spr.position.z += vaporVel[i * 3 + 2] * dt;
 
-    if (isCore) {
-      spr.scale.multiplyScalar(1 + dt * 1.2);
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 6.5);
+    if (kind === 0) {
+      spr.scale.multiplyScalar(1 + dt * 1.5);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 5);
+    } else if (kind === 1) {
+      // Ground cloud: expand sideways, linger, fade soft
+      spr.scale.x *= 1 + dt * 3.5;
+      spr.scale.y *= 1 + dt * 1.2;
+      spr.scale.z = spr.scale.x;
+      vaporVel[i * 3] *= 1 - dt * 0.9;
+      vaporVel[i * 3 + 1] *= 1 - dt * 2.5;
+      vaporVel[i * 3 + 2] *= 1 - dt * 0.9;
+      spr.material.opacity = Math.max(0, (1 - t * t) * 0.85);
+    } else if (kind === 2) {
+      // Trail: slow expand, long fade, curls slightly
+      spr.scale.multiplyScalar(1 + dt * 1.8);
+      vaporVel[i * 3 + 1] += Math.sin(t * 6 + i) * dt * 0.4;
+      spr.material.opacity = Math.max(0, (1 - t) * 0.6);
     } else {
-      spr.scale.multiplyScalar(1 + dt * 4.8);
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 1.6);
+      // Side puff
+      spr.scale.multiplyScalar(1 + dt * 4);
+      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.2);
     }
+
     if (vaporLife[i] <= 0 || spr.material.opacity < 0.02) {
       vaporLife[i] = 0;
       spr.visible = false;
@@ -2787,25 +2929,16 @@ function updateThrusters(dt) {
     }
   }
 
-  for (let i = 0; i < jetCount; i++) {
-    if (jetLife[i] <= 0) {
-      jetPos[i * 3 + 1] = -40;
-      continue;
-    }
-    jetLife[i] -= dt;
-    jetPos[i * 3] += jetVel[i * 3] * dt;
-    jetPos[i * 3 + 1] += jetVel[i * 3 + 1] * dt;
-    jetPos[i * 3 + 2] += jetVel[i * 3 + 2] * dt;
-    if (jetLife[i] <= 0) jetPos[i * 3 + 1] = -40;
-  }
+  const { jetPos, jetLife, jetCount, jets } = ud;
+  for (let i = 0; i < jetCount; i++) jetPos[i * 3 + 1] = -40;
   jets.geometry.attributes.position.needsUpdate = true;
-  jets.material.opacity = active ? 0.35 + lvl * 0.35 : 0;
-  jets.material.size = 0.06 + lvl * 0.06;
+  jets.material.opacity = 0;
 }
 
 function anyThrustVisible() {
   const ud = roadster.userData;
-  if ((ud.plumes || []).some((p) => p.group.visible)) return true;
+  if ((ud.plumes || []).some((p) => p.group.visible && (p.core?.material?.opacity || 0) > 0.05))
+    return true;
   if ((ud.vaporSprites || []).some((s) => s.visible && s.material.opacity > 0.05)) return true;
   return false;
 }
@@ -3295,10 +3428,10 @@ function exposeAPI() {
         hasEnv: !!scene.environment,
         vapor: ud.vaporSprites?.length || 0,
         modelRotY: ud.model?.rotation.y ?? null,
-        // GLB forward is +Z; after rotY=+π/2 that maps to world +X (travel)
+        // Custom 2026 mesh: local +X = nose / travel
         noseDir: (() => {
           if (!ud.model) return null;
-          const tip = new THREE.Vector3(0, 0, 1);
+          const tip = new THREE.Vector3(1, 0, 0);
           ud.model.localToWorld(tip);
           const o = new THREE.Vector3();
           ud.model.getWorldPosition(o);

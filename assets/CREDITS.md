@@ -1,12 +1,9 @@
 # Third-party assets
 
-## Tesla Roadster 2020 (glTF)
+## Tesla Roadster (in-game mesh)
 
-- **Author:** [metarex.4d](https://sketchfab.com/metarex.4d)
-- **Source:** [Tesla Roadster 2020 on Sketchfab](https://sketchfab.com/3d-models/tesla-roadster-2020-1fbf29e297bd4a17ac39a00a378441d8)
-- **License:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-- **Notes:** Draco + WebP compressed for web (`assets/models/tesla-roadster-2020.glb`). Attribution required.
-- **2026 redesign:** No properly licensed GLB of the Oct 15, 2026 McGregor production redesign was found (Sketchfab “2026” uploads are older speculative concepts; other downloads lack clear redistribution rights). Materials are restyled toward the press look (satin silver/white + dark lower cladding) on this 2020 mesh.
+- **2026 redesign:** No properly licensed GLB of the Oct 15, 2026 McGregor production redesign was available. The in-game car is an **original low-poly faceted model** authored in three.js (`buildRoadster2026` in `js/game.js`), inspired by public press photos of that reveal — not a third-party mesh.
+- **Legacy file:** `assets/models/tesla-roadster-2020.glb` (metarex.4d, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), [Sketchfab](https://sketchfab.com/3d-models/tesla-roadster-2020-1fbf29e297bd4a17ac39a00a378441d8)) remains in the repo for attribution history but is **not loaded** at runtime.
 
 ## Environment & materials (CC0)
 
@@ -23,8 +20,8 @@ From [Poly Haven](https://polyhaven.com/) under [CC0 1.0](https://creativecommon
 | [brick_wall_001](https://polyhaven.com/a/brick_wall_001) (1K) | Building masonry |
 | [rectangular_facade_tiles](https://polyhaven.com/a/rectangular_facade_tiles) (1K) | Glass facade panels |
 | [metal_plate](https://polyhaven.com/a/metal_plate) (1K) | Elevated curb rails, rooftop huts |
-| [gravel_floor_02](https://polyhaven.com/a/gravel_floor_02) (1K) | Camera-side / under-street ground fill |
-| [cobblestone_floor_03](https://polyhaven.com/a/cobblestone_floor_03) (1K) | Sidewalks, plazas |
+| [gravel_floor_02](https://polyhaven.com/a/gravel_floor_02) (1K) | Far camera-side / under-street ground fill |
+| [cobblestone_floor_03](https://polyhaven.com/a/cobblestone_floor_03) (1K) | Sidewalks |
 | [roof_09](https://polyhaven.com/a/roof_09) (1K) | Building roof caps |
 | [brown_mud_03](https://polyhaven.com/a/brown_mud_03) (1K) | Far-side dirt ground fill |
 
