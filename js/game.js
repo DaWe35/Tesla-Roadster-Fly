@@ -22,8 +22,9 @@ const HOP_DURATION = 0.12; // near-instant level change
 const FLIP_DURATION = 0.22;
 const REACTION_TIME = 0.45; // human reaction budget before a gap
 const SEGMENT_LEN = 28;
-const SEGMENTS_AHEAD = 10;
-const SEGMENTS_BEHIND = 3;
+/** Half the prior draw distance — fewer segments + tighter fog/far plane. */
+const SEGMENTS_AHEAD = 5;
+const SEGMENTS_BEHIND = 2;
 
 function floorY(level) {
   return LEVELS[level].y;
@@ -93,7 +94,8 @@ let bloomPass = null;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: QUALITY === "high" && !isMobile,
+  // Native MSAA — cheap at our capped pixel ratio (esp. mobile ~1.0)
+  antialias: true,
   powerPreference: "high-performance",
   alpha: false,
 });
@@ -116,13 +118,14 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 const FOG_COLOR = 0xb8c9d8;
 scene.background = new THREE.Color(FOG_COLOR);
-scene.fog = new THREE.Fog(FOG_COLOR, 70, 240);
+// Half prior fog/far distance for cheaper fill + earlier cull
+scene.fog = new THREE.Fog(FOG_COLOR, 35, 120);
 
 const camera = new THREE.PerspectiveCamera(
   55,
   window.innerWidth / window.innerHeight,
   0.1,
-  280
+  140
 );
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 6, -10);
@@ -336,16 +339,11 @@ async function loadWorldTextures() {
   const jobs = [
     ...loadMapSet("asphalt", "asphalt", true),
     ...loadMapSet("asphaltAlt", "asphalt_alt"),
-    ...loadMapSet("concrete", "concrete"),
     ...loadMapSet("concreteWall", "concrete_wall"),
     ...loadMapSet("concretePanel", "concrete_panel"),
-    ...loadMapSet("brick", "brick"),
-    ...loadMapSet("facade", "facade"),
     ...loadMapSet("metal", "metal"),
-    ...loadMapSet("gravel", "gravel"),
-    ...loadMapSet("cobble", "cobble"),
-    ...loadMapSet("roof", "roof"),
     ...loadMapSet("dirt", "dirt"),
+    // brick/facade/roof/cobble/gravel unused — buildings are solid colors now
     loadTexture("assets/textures/effects/soft-particle.png").then((t) => {
       t.colorSpace = THREE.SRGBColorSpace;
       maps.softParticle = t;
@@ -484,8 +482,8 @@ async function loadEnvironment() {
     scene.environmentIntensity = QUALITY === "low" ? 0.95 : 1.1;
     scene.fog = new THREE.Fog(
       0x8fa8bc,
-      QUALITY === "low" ? 55 : 80,
-      QUALITY === "low" ? 190 : 250
+      QUALITY === "low" ? 28 : 40,
+      QUALITY === "low" ? 95 : 125
     );
     hdr.dispose();
     pmrem.dispose();
@@ -553,6 +551,30 @@ const BUILDING_PALETTE = [
   0xd0c4b0, 0x7d8b97, 0xb0a498, 0x96a0a8, 0xc8b8a8,
   0x8a929c, 0xbca890, 0x9cacb4, 0xa89080, 0xbec4c8,
 ];
+/** Shared solid (untextured) building mats — fewer GPU programs, no map cost. */
+const buildingBodyMats = BUILDING_PALETTE.map(
+  (c) =>
+    new THREE.MeshStandardMaterial({
+      color: c,
+      roughness: 0.82,
+      metalness: 0.08,
+      envMapIntensity: 0.35,
+    })
+);
+const buildingRoofMat = new THREE.MeshStandardMaterial({
+  color: 0x6a7078,
+  roughness: 0.88,
+  metalness: 0.12,
+  envMapIntensity: 0.3,
+});
+const buildingWinMat = new THREE.MeshStandardMaterial({
+  color: 0xa8c8e0,
+  emissive: 0x3a6088,
+  emissiveIntensity: 0.55,
+  roughness: 0.45,
+  metalness: 0.08,
+  envMapIntensity: 0.25,
+});
 
 /* ── Roadster 2026: custom faceted low-poly + cold-gas thrusters ─ */
 /**
@@ -1206,64 +1228,37 @@ const particles = [];
 
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
-  const cutawayMats = [];
-  // Mix facade / brick / panel — cheap mats (no transmission windows)
-  const roll = Math.random();
-  const useBrick = h < 10 && roll > 0.55;
-  const usePanel = !useBrick && h < 16 && roll > 0.28;
-  const src = useBrick ? maps.brick : usePanel ? maps.concretePanel : maps.facade;
-  const tint = useBrick
-    ? new THREE.Color(color).lerp(new THREE.Color(0x8a7a6a), 0.55)
-    : usePanel
-      ? new THREE.Color(0xc8cdd4).lerp(new THREE.Color(color), 0.2)
-      : new THREE.Color(0xb8c4d0).lerp(new THREE.Color(color), 0.25);
-  const rx = Math.max(1, Math.round(w / 2.4));
-  const ry = Math.max(2, Math.round(h / 3.0));
-  const bodyMat = pbrFrom(src, rx, ry, {
-    color: tint,
-    roughness: useBrick ? 0.84 : usePanel ? 0.72 : 0.35,
-    metalness: useBrick ? 0.06 : usePanel ? 0.12 : 0.55,
-    envMapIntensity: useBrick ? 0.3 : usePanel ? 0.45 : 0.9,
-    cheap: true, // skip normal/rough maps on city massing
-  });
-  cutawayMats.push(bodyMat);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
+  // Solid colors only — no diffuse/normal/rough maps on houses
+  const palIdx = BUILDING_PALETTE.indexOf(color);
+  const bodyMat =
+    buildingBodyMats[palIdx >= 0 ? palIdx : (Math.random() * buildingBodyMats.length) | 0];
+  // Per-building clone so cutaway opacity never bleeds across shared mats
+  const body = bodyMat.clone();
+  const cutawayMats = [body];
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), body);
   mesh.position.y = h / 2;
   mesh.castShadow = false;
   mesh.receiveShadow = false;
   g.add(mesh);
 
-  // Single emissive ribbon (1 draw) instead of a window grid
-  if (h > 4 && Math.random() > 0.25) {
-    const winMat = new THREE.MeshStandardMaterial({
-      color: 0xa8c8e0,
-      emissive: 0x3a6088,
-      emissiveIntensity: 0.5 + Math.random() * 0.35,
-      roughness: 0.4,
-      metalness: 0.1,
-      envMapIntensity: 0.3,
-    });
-    cutawayMats.push(winMat);
+  if (h > 4 && Math.random() > 0.3) {
+    const win = buildingWinMat.clone();
+    win.emissiveIntensity = 0.4 + Math.random() * 0.35;
+    cutawayMats.push(win);
     const ribbon = new THREE.Mesh(
       new THREE.PlaneGeometry(Math.max(0.8, w * 0.72), Math.max(0.6, h * 0.55)),
-      winMat
+      win
     );
     ribbon.position.set(0, h * 0.48, d / 2 + 0.02);
     ribbon.castShadow = false;
     g.add(ribbon);
   }
 
-  const roofSlabMat = pbrFrom(maps.roof, Math.max(1.5, w / 2), Math.max(1.5, d / 2), {
-    color: 0xb8bcc4,
-    roughness: 0.75,
-    metalness: 0.3,
-    envMapIntensity: 0.5,
-    cheap: true,
-  });
-  cutawayMats.push(roofSlabMat);
+  const roof = buildingRoofMat.clone();
+  cutawayMats.push(roof);
   const roofSlab = new THREE.Mesh(
     new THREE.BoxGeometry(w * 1.02, 0.18, d * 1.02),
-    roofSlabMat
+    roof
   );
   roofSlab.position.set(0, h + 0.08, 0);
   roofSlab.castShadow = false;
@@ -2026,14 +2021,17 @@ function createDeckSurface(levelIndex, zCenter) {
   // Do NOT put curbMat in cutawayMats — must stay solid opaque
 
   for (const side of [-1, 1]) {
-    const curb = new THREE.Mesh(
-      new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.5, 0.36),
-      curbMat
-    );
-    curb.position.set(0, ly + 0.18, side * (width / 2));
-    curb.castShadow = true;
-    curb.receiveShadow = true;
-    g.add(curb);
+    // No curb on camera-side (−Z) street — that read as a tan sidewalk strip.
+    if (!(levelIndex === 0 && side < 0)) {
+      const curb = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN + 0.08, 0.5, 0.36),
+        curbMat
+      );
+      curb.position.set(0, ly + 0.18, side * (width / 2));
+      curb.castShadow = false;
+      curb.receiveShadow = true;
+      g.add(curb);
+    }
 
     // Outer vertical fascia + support pillars ONLY on the +Z (right) side.
     // Camera-side (−Z) pillars/walls sit between the lens and the car.
@@ -2076,15 +2074,11 @@ function createDeckSurface(levelIndex, zCenter) {
   }
 
   if (levelIndex === 0) {
-    // Street edge: raised curb (vertical face) → paved sidewalk → frontage apron.
-    // All Ys distinct from road top (ly+0.02) and from ground strips (y≤−0.3).
-    // UV scale ≈ real-world: cobble ~0.2 m tiles, concrete panels ~1 m.
+    // Street edge: curb only (no paved sidewalk strip). Frontage on +Z.
     const roadHalf = width / 2; // 5.0
     const curbW = 0.32;
-    const walkW = 2.4;
     const apronW = 1.5;
-    const curbTop = ly + 0.45; // tall vertical face readable from chase cam
-    const walkTop = ly + 0.28;
+    const curbTop = ly + 0.45;
     const apronTop = ly - 0.05;
 
     const curbMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 4, 0.5, {
@@ -2094,56 +2088,32 @@ function createDeckSurface(levelIndex, zCenter) {
       envMapIntensity: 0.15,
       normalScale: new THREE.Vector2(0.8, 0.8),
     });
-    // Cobble: ~0.22 m stones → ~SEGMENT_LEN/0.22 repeats along X, walkW/0.22 along Z
-    const walkMat = pbrFrom(maps.cobble, SEGMENT_LEN / 0.22, walkW / 0.22, {
-      color: 0xb8b4ac,
-      roughness: 0.9,
-      metalness: 0.03,
-      envMapIntensity: 0.18,
-      normalScale: new THREE.Vector2(1.1, 1.1),
-    });
     const apronMat = pbrFrom(maps.concretePanel, SEGMENT_LEN / 2.5, apronW / 1.2, {
       color: 0xa8a49c,
       roughness: 0.88,
       metalness: 0.04,
       envMapIntensity: 0.2,
-      normalScale: new THREE.Vector2(0.9, 0.9),
+      cheap: true,
     });
-    const potMat = pbrFrom(maps.concreteWall, 1, 1, {
+    const potMat = new THREE.MeshStandardMaterial({
       color: 0xb0aaa0,
       roughness: 0.9,
       metalness: 0.04,
       envMapIntensity: 0.18,
     });
 
-    for (const side of [-1, 1]) {
-      const s = side;
-      // Low curb/walk on both sides (doesn't blind the side cam). Tall props
-      // and planters stay on +Z only so −Z stays a clear camera corridor.
+    // +Z only: curb + apron + shop (no near-edge sidewalk / curb on −Z)
+    {
+      const s = 1;
       const curbH = curbTop - (ly - 0.08);
       const curb = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN + 0.04, curbH, curbW),
         curbMat
       );
       curb.position.set(0, ly - 0.08 + curbH / 2, s * (roadHalf + curbW / 2));
-      curb.castShadow = true;
+      curb.castShadow = false;
       curb.receiveShadow = true;
       g.add(curb);
-
-      const walk = new THREE.Mesh(
-        new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.14, walkW),
-        walkMat
-      );
-      walk.position.set(
-        0,
-        walkTop - 0.07,
-        s * (roadHalf + curbW + walkW / 2)
-      );
-      walk.castShadow = true;
-      walk.receiveShadow = true;
-      g.add(walk);
-
-      if (s < 0) continue; // camera corridor — no apron props / shops on −Z
 
       const apron = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.1, apronW),
@@ -2152,7 +2122,7 @@ function createDeckSurface(levelIndex, zCenter) {
       apron.position.set(
         0,
         apronTop - 0.05,
-        s * (roadHalf + curbW + walkW + apronW / 2)
+        s * (roadHalf + curbW + apronW / 2)
       );
       apron.receiveShadow = true;
       g.add(apron);
@@ -2165,69 +2135,47 @@ function createDeckSurface(levelIndex, zCenter) {
         (d, i) => {
           d.position.set(
             -SEGMENT_LEN / 2 + 6 + i * 12,
-            walkTop + 0.16,
-            s * (roadHalf + curbW + walkW / 2)
+            curbTop + 0.16,
+            s * (roadHalf + curbW + 0.55)
           );
           d.scale.set(1, 1, 1);
           d.rotation.set(0, 0, 0);
         }
       );
 
-      // Shop frontage ONLY on the far side (+Z).
-      if (s > 0) {
-        const frontZ = roadHalf + curbW + walkW + apronW + 0.4;
-        const storeMat = pbrFrom(maps.brick, SEGMENT_LEN / 3, 2.5, {
-          color: 0xa09080,
-          roughness: 0.86,
-          metalness: 0.04,
-          envMapIntensity: 0.22,
-          cheap: true,
-        });
-        const store = new THREE.Mesh(
-          new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
-          storeMat
-        );
-        store.position.set(0, 1.6, frontZ);
-        store.castShadow = false;
-        store.receiveShadow = false;
-        g.add(store);
-        const winMat = new THREE.MeshStandardMaterial({
-          color: 0x1a2838,
-          emissive: 0x3a6090,
-          emissiveIntensity: 0.35,
-          roughness: 0.3,
-          metalness: 0.2,
-        });
-        addInstancedBoxes(
-          g,
-          3,
-          new THREE.BoxGeometry(1.4, 1.1, 0.08),
-          winMat,
-          (d, i) => {
-            d.position.set(-SEGMENT_LEN / 2 + 5 + i * 8, 1.5, frontZ - 0.44);
-            d.scale.set(1, 1, 1);
-            d.rotation.set(0, 0, 0);
-          }
-        );
-      } else {
-        // Camera side stays open — no reflective grey plaza filling the frame.
-        // A recessed matte asphalt pad only, well below street level.
-        const plazaZ = roadHalf + curbW + walkW + apronW + 1.6;
-        const plazaMat = pbrFrom(maps.asphalt, SEGMENT_LEN / 1.2, 3.2 / 1.2, {
-          color: 0x2e3238,
-          roughness: 1.0,
-          metalness: 0.0,
-          envMapIntensity: 0.02,
-          normalScale: new THREE.Vector2(0.35, 0.35),
-        });
-        const plaza = new THREE.Mesh(
-          new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.06, 3.2),
-          plazaMat
-        );
-        plaza.position.set(0, -0.55, -plazaZ);
-        plaza.receiveShadow = true;
-        g.add(plaza);
-      }
+      const frontZ = roadHalf + curbW + apronW + 0.4;
+      const storeMat = new THREE.MeshStandardMaterial({
+        color: 0xa09080,
+        roughness: 0.86,
+        metalness: 0.04,
+        envMapIntensity: 0.22,
+      });
+      const store = new THREE.Mesh(
+        new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
+        storeMat
+      );
+      store.position.set(0, 1.6, frontZ);
+      store.castShadow = false;
+      store.receiveShadow = false;
+      g.add(store);
+      const winMat = new THREE.MeshStandardMaterial({
+        color: 0x1a2838,
+        emissive: 0x3a6090,
+        emissiveIntensity: 0.35,
+        roughness: 0.3,
+        metalness: 0.2,
+      });
+      addInstancedBoxes(
+        g,
+        3,
+        new THREE.BoxGeometry(1.4, 1.1, 0.08),
+        winMat,
+        (d, i) => {
+          d.position.set(-SEGMENT_LEN / 2 + 5 + i * 8, 1.5, frontZ - 0.44);
+          d.scale.set(1, 1, 1);
+          d.rotation.set(0, 0, 0);
+        }
+      );
     }
   }
 
@@ -2340,15 +2288,15 @@ function ensureTerrainFollow() {
   if (terrainFollow) return terrainFollow;
   const g = new THREE.Group();
   // Right-side far dirt only (cam-side handled by leftTerrainFollow)
-  const mat = pbrFrom(maps.dirt, 40, 8, {
+  const mat = pbrFrom(maps.dirt, 20, 6, {
     color: 0x5e5040,
     roughness: 0.97,
     metalness: 0.02,
     envMapIntensity: 0.08,
     cheap: true,
   });
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(140, 0.12, 24), mat);
-  mesh.position.set(0, -0.65, 36);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(80, 0.12, 18), mat);
+  mesh.position.set(0, -0.65, 28);
   mesh.receiveShadow = true;
   mesh.castShadow = false;
   g.add(mesh);
@@ -2363,17 +2311,16 @@ function ensureTerrainFollow() {
 function ensureLeftCamScenery() {
   if (leftTerrainFollow) return leftTerrainFollow;
   const g = new THREE.Group();
-  // Single tiling gravel/dirt plane — one draw call, cheap material
-  const groundMat = pbrFrom(maps.gravel || maps.dirt, 28, 10, {
-    color: 0x6a6860,
+  // Dark solid ground (no light tan wash) — one draw, cheap
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x121410,
     roughness: 0.98,
     metalness: 0.02,
-    envMapIntensity: 0.06,
-    cheap: true,
+    envMapIntensity: 0.03,
   });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 70), groundMat);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(110, 50), groundMat);
   ground.rotation.x = -Math.PI / 2;
-  ground.position.set(0, -0.55, -28);
+  ground.position.set(0, -0.55, -22);
   ground.receiveShadow = false;
   ground.castShadow = false;
   g.add(ground);
@@ -2399,9 +2346,9 @@ function ensureLeftCamScenery() {
     const w = 1.4 + rnd() * 3.2;
     const d = 0.9 + rnd() * 1.8;
     _instDummy.position.set(
-      -85 + i * 4.8 + rnd() * 1.8,
+      -55 + i * 3.2 + rnd() * 1.2,
       h * 0.5 - 0.4,
-      -34 - rnd() * 12
+      -28 - rnd() * 8
     );
     _instDummy.scale.set(w, h, d);
     _instDummy.rotation.set(0, 0, 0);
@@ -3945,6 +3892,10 @@ function exposeAPI() {
         quality: QUALITY,
         shadowMap: sun.shadow.mapSize.x,
         bloom: !!composer,
+        antialias: !!renderer.getContext()?.getContextAttributes?.()?.antialias,
+        cameraFar: camera.far,
+        fogFar: scene.fog?.far ?? null,
+        segmentsAhead: SEGMENTS_AHEAD,
       };
     },
     minOverlapDist,
