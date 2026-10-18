@@ -118,13 +118,6 @@ const camera = new THREE.PerspectiveCamera(
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 6, -10);
 
-/* ── Camera peek (brief raise/pull-back before support gaps) ─ */
-const PEEK_LEAD_SEC = 1.75; // start rising ~1.5–2 s before the gap
-const PEEK_HOLD_PAST_SEC = 0.4; // linger just past the gap end
-const PEEK_MERGE_SEC = 2.4; // treat nearby gaps as one peek window
-let camPeek = 0; // 0 = default chase, 1 = full peek
-let camPeekWindow = null; // { startX, endX, gapStart, gapEnd, level }
-
 /* ── Loading UI ───────────────────────────────────────────── */
 let assetsReady = false;
 let readyResolve = null;
@@ -1544,15 +1537,28 @@ function makeBarrier(level, onCeiling = false) {
   return g;
 }
 
-function makeCeilingSpike(level) {
+/** Deck whose underside is the soffit for inverted driving on `level`. */
+function ceilingSupportDeck(level) {
+  return level < LEVELS.length - 1 ? level + 1 : level;
+}
+
+/**
+ * Realistic soffit hazards for inverted play: hanging sign, pipe run, duct, or panel.
+ * All hang from ceilingY(level) into the inverted driving envelope.
+ */
+function makeHangingSoffitHazard(level, kind = "sign") {
   const g = new THREE.Group();
   const cy = ceilingY(level);
-  const panelMat = pbrFrom(maps.concretePanel, 0.8, 0.8, {
-    color: 0xb8bcc4,
-    roughness: 0.75,
+  const metal = pbrFrom(maps.metal, 0.5, 0.5, {
+    color: 0x5a626c,
+    metalness: 0.82,
+    roughness: 0.28,
+  });
+  const paint = pbrFrom(maps.concretePanel, 0.8, 0.8, {
+    color: 0xc4c8ce,
+    roughness: 0.72,
     metalness: 0.12,
-    envMapIntensity: 0.45,
-    normalScale: new THREE.Vector2(1.1, 1.1),
+    envMapIntensity: 0.4,
   });
   const stripeMat = new THREE.MeshStandardMaterial({
     map: hazardStripeYB ? hazardStripeYB.clone() : null,
@@ -1564,32 +1570,95 @@ function makeCeilingSpike(level) {
     stripeMat.map.repeat.set(2, 1);
     stripeMat.map.needsUpdate = true;
   }
-  const hangMat = pbrFrom(maps.metal, 0.4, 0.4, {
-    color: 0x555c66,
-    metalness: 0.8,
-    roughness: 0.32,
-  });
 
-  for (let i = -1; i <= 1; i++) {
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.95, 0.7), panelMat);
-    panel.position.set(0, cy - 0.55, i * 0.85);
+  const addStem = (x, z, len = 0.4) => {
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 6), metal);
+    stem.position.set(x, cy - len * 0.5, z);
+    g.add(stem);
+  };
+
+  if (kind === "pipe") {
+    // Bundle of conduit pipes hanging below the soffit
+    for (let i = 0; i < 3; i++) {
+      const z = (i - 1) * 0.62;
+      const pipe = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18 + i * 0.03, 0.18 + i * 0.03, 2.8, 8),
+        metal
+      );
+      pipe.rotation.z = Math.PI / 2;
+      pipe.position.set(0, cy - 0.7 - i * 0.14, z);
+      pipe.castShadow = true;
+      g.add(pipe);
+      addStem(-0.85, z, 0.45);
+      addStem(0.85, z, 0.45);
+    }
+  } else if (kind === "duct") {
+    const duct = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.95, 1.6), paint);
+    duct.position.set(0, cy - 0.75, 0);
+    duct.castShadow = true;
+    g.add(duct);
+    const mouth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.45, 1.1),
+      new THREE.MeshStandardMaterial({ color: 0x2a2e34, roughness: 0.9, metalness: 0.05 })
+    );
+    mouth.position.set(1.34, cy - 0.75, 0);
+    g.add(mouth);
+    addStem(-0.7, -0.45, 0.35);
+    addStem(-0.7, 0.45, 0.35);
+    addStem(0.7, -0.45, 0.35);
+    addStem(0.7, 0.45, 0.35);
+  } else if (kind === "barrier") {
+    // Suspended construction panel (legacy ceiling barrier look)
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.15, 2.35), metal);
+    panel.position.set(0, cy - 0.75, 0);
     panel.castShadow = true;
     g.add(panel);
-    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.28), stripeMat);
-    stripe.position.set(0.28, cy - 0.4, i * 0.85);
-    stripe.rotation.y = Math.PI / 2;
-    g.add(stripe);
-    const hang = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.35, 6), hangMat);
-    hang.position.set(0, cy - 0.08, i * 0.85);
-    g.add(hang);
+    for (const side of [-1, 1]) {
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.35), stripeMat);
+      stripe.position.set(0, cy - 0.55, side * 1.19);
+      stripe.rotation.y = side > 0 ? 0 : Math.PI;
+      g.add(stripe);
+    }
+    addStem(-0.5, -0.7, 0.35);
+    addStem(-0.5, 0.7, 0.35);
+    addStem(0.5, -0.7, 0.35);
+    addStem(0.5, 0.7, 0.35);
+  } else {
+    // Hanging shop / wayfinding sign
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.05, 2.1), paint);
+    board.position.set(0, cy - 0.85, 0);
+    board.castShadow = true;
+    g.add(board);
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.9, 0.7),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8c84a,
+        roughness: 0.45,
+        metalness: 0.05,
+        emissive: 0x3a3010,
+        emissiveIntensity: 0.25,
+      })
+    );
+    face.position.set(0.07, cy - 0.85, 0);
+    face.rotation.y = Math.PI / 2;
+    g.add(face);
+    addStem(0, -0.75, 0.45);
+    addStem(0, 0.75, 0.45);
   }
+
   g.userData = {
-    type: "ceilingSpike",
+    type: "ceilingHazard",
+    kind,
     level,
     onCeiling: true,
-    hitHalfX: 1.0,
+    hitHalfX: kind === "pipe" ? 1.3 : kind === "duct" ? 1.2 : 1.05,
   };
   return g;
+}
+
+function makeCeilingSpike(level) {
+  const kinds = ["sign", "pipe", "duct", "barrier"];
+  return makeHangingSoffitHazard(level, kinds[(rand() * kinds.length) | 0]);
 }
 
 
@@ -2059,11 +2128,11 @@ function createDeckSurface(levelIndex, zCenter) {
 
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
-  // ONLY far fill — never under the chase-cam foreground or street edge.
-  // Street stack owns |z|≲10 (road/curb/walk/apron/shops). Camera sits ~z=−13.
+  // ONLY far fill — never under the side chase-cam foreground or street edge.
+  // Street stack owns |z|≲10; camera sits ~z=−13.5 so cam-side fill stays distant.
   const strips = [
-    { src: maps.asphalt, z: -24, depth: 12, color: 0x6a6e74, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
-    { src: maps.dirt, z: 24, depth: 12, color: 0x6e5e4a, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
+    { src: maps.asphalt, z: -30, depth: 10, color: 0x6a6e74, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 10 / 1.0 },
+    { src: maps.dirt, z: 26, depth: 12, color: 0x6e5e4a, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
   ];
   for (const s of strips) {
     const mat = pbrFrom(s.src, s.rx, s.ry, {
@@ -2230,8 +2299,15 @@ let nextSegmentX = 0;
 let rngSeed = 1;
 /** columnGapPlan.get(idx) -> boolean[3] — which levels are gapped in that column */
 const columnGapPlan = new Map();
+/**
+ * columnHazardPlan.get(idx) -> { floor: boolean[3], ceil: boolean[3] }
+ * floor[L] = upright barrier on deck L; ceil[L] = hanging soffit hazard for inverted L
+ */
+const columnHazardPlan = new Map();
 /** Last gap column index per level (for minimum spacing) */
 const lastGapCol = [-999, -999, -999];
+/** Last ceiling-obstacle column per drive-level (inverted L) */
+const lastCeilObsCol = [-999, -999, -999];
 
 function rand() {
   rngSeed = (rngSeed * 16807) % 2147483647;
@@ -2315,10 +2391,38 @@ function planColumnGaps(idx, safe) {
   return gaps;
 }
 
+function emptyHazardFlags() {
+  return { floor: [false, false, false], ceil: [false, false, false] };
+}
+
+/** True if another drive-level still has a clear upright or inverted option. */
+function levelHasEscape(gaps, haz, blockedLevel) {
+  for (let o = 0; o < LEVELS.length; o++) {
+    if (o === blockedLevel) continue;
+    const uprightOk = !gaps[o] && !haz.floor[o];
+    const deck = ceilingSupportDeck(o);
+    const invertedOk = !gaps[deck] && !haz.ceil[o];
+    if (uprightOk || invertedOk) return true;
+  }
+  return false;
+}
+
+/**
+ * Floor gap/obstacle + ceiling obstacle on the same drive-level blocks both
+ * options for that level — only legal if another level is reachable.
+ */
+function blocksBothOptions(gaps, haz, level) {
+  const floorBlocked = !!gaps[level] || !!haz.floor[level];
+  const ceilBlocked = !!haz.ceil[level];
+  if (!(floorBlocked && ceilBlocked)) return false;
+  return !levelHasEscape(gaps, haz, level);
+}
+
 function spawnSegment(xCenter, safe = false) {
   const idx = Math.round(xCenter / SEGMENT_LEN);
   const gaps = planColumnGaps(idx, safe);
   columnGapPlan.set(idx, gaps.slice());
+  if (!columnHazardPlan.has(idx)) columnHazardPlan.set(idx, emptyHazardFlags());
   let anySolid = false;
 
   for (let li = 0; li < LEVELS.length; li++) {
@@ -2347,14 +2451,14 @@ function spawnSegment(xCenter, safe = false) {
   if (anySolid) {
     // Opening stretch (gap-safe): dense easy floor obstacles from second one.
     // Later columns: normal density that scales up with time.
-    if (safe && idx >= 1) placeHazards(xCenter, true);
-    else if (!safe) placeHazards(xCenter, false);
+    if (safe && idx >= 1) placeHazards(xCenter, true, idx);
+    else if (!safe) placeHazards(xCenter, false, idx);
   }
   nextSegmentX = Math.max(nextSegmentX, xCenter + SEGMENT_LEN);
 }
 
 /**
- * Automated survivability check over the planned columns.
+ * Automated survivability check over gaps + floor/ceiling hazard combinations.
  * Returns { ok, errors[], minOverlap, spacingCols }.
  */
 function validateGapPlan() {
@@ -2368,6 +2472,7 @@ function validateGapPlan() {
 
   for (const idx of indices) {
     const gaps = columnGapPlan.get(idx);
+    const haz = columnHazardPlan.get(idx) || emptyHazardFlags();
     const gapCount = gaps.filter(Boolean).length;
     if (gapCount >= LEVELS.length) {
       errors.push(`col ${idx}: all levels gapped`);
@@ -2407,57 +2512,128 @@ function validateGapPlan() {
         }
       }
     }
+
+    // Ceiling hazards need a solid soffit deck
+    for (let li = 0; li < LEVELS.length; li++) {
+      if (!haz.ceil[li]) continue;
+      const deck = ceilingSupportDeck(li);
+      if (gaps[deck]) {
+        errors.push(`col ${idx}: ceiling hazard L${li} but soffit deck L${deck} is gapped`);
+      }
+      if (blocksBothOptions(gaps, haz, li)) {
+        errors.push(
+          `col ${idx}: L${li} floor+ceiling both blocked with no escape level`
+        );
+      }
+    }
+    for (let li = 0; li < LEVELS.length; li++) {
+      if (!haz.floor[li]) continue;
+      if (gaps[li]) {
+        errors.push(`col ${idx}: floor hazard on gapped L${li}`);
+      }
+      if (blocksBothOptions(gaps, haz, li)) {
+        errors.push(
+          `col ${idx}: L${li} floor+ceiling both blocked with no escape level`
+        );
+      }
+    }
   }
 
   return { ok: errors.length === 0, errors, minOverlap: minOv, spacingCols: sep };
 }
 
 /**
- * Obstacles: solid easy density from the opening, then scales up.
- * `opening` = first stretch (gap-safe columns) — lots of telegraphed floor barriers.
+ * Obstacles: floor barriers + soffit (ceiling) hangers for inverted play.
+ * Never block both floor and ceiling options of a level without an escape hop.
  */
-function placeHazards(xCenter, opening = false) {
+function placeHazards(xCenter, opening = false, idx = 0) {
   const progress = Math.min(1, Math.max(0, state.time / 75));
-  // Opening keeps a high floor-barrier rate; later adds trains/ceiling threats
-  const floorChance = opening ? 0.72 : 0.38 + progress * 0.28;
-  const ceilChance = opening ? 0.08 : 0.12 + progress * 0.22;
-  const trainChance = opening ? 0.06 : 0.1 + progress * 0.22;
+  const gaps = columnGapPlan.get(idx) || [false, false, false];
+  const haz = columnHazardPlan.get(idx) || emptyHazardFlags();
+  columnHazardPlan.set(idx, haz);
 
-  // Opening: 1–2 telegraphed floor barriers almost every column
+  const floorChance = opening ? 0.72 : 0.38 + progress * 0.28;
+  // Ceiling threats scale like floor ones so inverted runs stay challenging
+  const ceilChance = opening ? 0.28 : 0.32 + progress * 0.34;
+  const trainChance = opening ? 0.06 : 0.1 + progress * 0.22;
+  const ceilSep = Math.max(2, Math.ceil(minGapSpacingCols() * 0.75));
+
+  const tryFloor = (level, xOff) => {
+    if (gaps[level] || haz.floor[level]) return false;
+    haz.floor[level] = true;
+    if (blocksBothOptions(gaps, haz, level)) {
+      haz.floor[level] = false;
+      return false;
+    }
+    const bar = makeBarrier(level, false);
+    bar.position.set(xCenter + xOff, 0, 0);
+    worldRoot.add(bar);
+    obstacles.push(bar);
+    return true;
+  };
+
+  const tryCeil = (level, xOff) => {
+    const deck = ceilingSupportDeck(level);
+    if (gaps[deck] || haz.ceil[level]) return false;
+    if (idx - lastCeilObsCol[level] < ceilSep) return false;
+    haz.ceil[level] = true;
+    if (blocksBothOptions(gaps, haz, level)) {
+      haz.ceil[level] = false;
+      return false;
+    }
+    const kindRoll = rand();
+    const kind =
+      kindRoll < 0.28 ? "sign" : kindRoll < 0.55 ? "pipe" : kindRoll < 0.78 ? "duct" : "barrier";
+    const hazard =
+      kind === "barrier" ? makeBarrier(level, true) : makeHangingSoffitHazard(level, kind);
+    hazard.position.set(xCenter + xOff, 0, 0);
+    worldRoot.add(hazard);
+    obstacles.push(hazard);
+    lastCeilObsCol[level] = idx;
+    return true;
+  };
+
   if (opening) {
     const n = 1 + (rand() < 0.65 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const level = rand() < 0.7 ? 0 : 1;
-      const bar = makeBarrier(level, false);
-      bar.position.set(xCenter + (rand() - 0.5) * 5, 0, 0);
-      worldRoot.add(bar);
-      obstacles.push(bar);
+      tryFloor(level, (rand() - 0.5) * 5);
     }
   } else if (rand() < floorChance) {
     const level = (rand() * 3) | 0;
-    const bar = makeBarrier(level, false);
-    bar.position.set(xCenter + (rand() - 0.5) * 8, 0, 0);
-    worldRoot.add(bar);
-    obstacles.push(bar);
+    tryFloor(level, (rand() - 0.5) * 8);
   }
 
   if (rand() < ceilChance) {
-    const level = opening ? 0 : (rand() * 3) | 0;
-    const hazard = opening || rand() < 0.4 ? makeBarrier(level, true) : makeCeilingSpike(level);
-    hazard.position.set(xCenter + (rand() - 0.5) * 6, 0, 0);
-    worldRoot.add(hazard);
-    obstacles.push(hazard);
+    const candidates = [];
+    for (let li = 0; li < LEVELS.length; li++) {
+      if (!gaps[ceilingSupportDeck(li)]) candidates.push(li);
+    }
+    if (candidates.length) {
+      const level = opening
+        ? candidates[0]
+        : candidates[(rand() * candidates.length) | 0];
+      tryCeil(level, (rand() - 0.5) * 6);
+    }
   }
 
   if (rand() < trainChance) {
     const level = rand() < 0.65 ? 0 : 1;
-    const train = makeTrain(opening ? 8 : 10 + ((rand() * 6) | 0));
-    train.position.set(xCenter + (rand() - 0.5) * 5, floorY(level), 0);
-    train.userData.level = level;
-    train.userData.onCeiling = false;
-    train.userData.speed = opening ? 1.5 + rand() * 1.5 : 2 + rand() * 3;
-    worldRoot.add(train);
-    trains.push(train);
+    if (!gaps[level] && !haz.floor[level]) {
+      // Trains count as floor threats for survivability
+      haz.floor[level] = true;
+      if (blocksBothOptions(gaps, haz, level)) {
+        haz.floor[level] = false;
+      } else {
+        const train = makeTrain(opening ? 8 : 10 + ((rand() * 6) | 0));
+        train.position.set(xCenter + (rand() - 0.5) * 5, floorY(level), 0);
+        train.userData.level = level;
+        train.userData.onCeiling = false;
+        train.userData.speed = opening ? 1.5 + rand() * 1.5 : 2 + rand() * 3;
+        worldRoot.add(train);
+        trains.push(train);
+      }
+    }
   }
 }
 
@@ -2476,7 +2652,9 @@ function resetWorld() {
   pickups = [];
   nextSegmentX = 0;
   columnGapPlan.clear();
+  columnHazardPlan.clear();
   lastGapCol[0] = lastGapCol[1] = lastGapCol[2] = -999;
+  lastCeilObsCol[0] = lastCeilObsCol[1] = lastCeilObsCol[2] = -999;
   rngSeed = (Date.now() % 100000) + 1;
   ensureTerrainFollow();
 
@@ -3061,140 +3239,41 @@ function updateBuildingCutaway() {
   }
 }
 
-/**
- * Deck level in columnGapPlan that the car needs for support right now.
- * Upright → current floor. Inverted → ceiling deck (level above, or same on roof).
- */
-function supportGapLevel() {
-  if (state.inverted) {
-    return state.level < LEVELS.length - 1 ? state.level + 1 : state.level;
-  }
-  return state.level;
-}
-
-/**
- * Next peek window from gap planner: lead-in before the first threatening gap,
- * merged through any nearby follow-on gaps so peeks don't chatter.
- */
-function findCamPeekWindow(carX, speed) {
-  const li = supportGapLevel();
-  const spd = Math.max(speed, state.baseSpeed * 0.85, 6);
-  const leadDist = spd * PEEK_LEAD_SEC;
-  const mergeDist = spd * PEEK_MERGE_SEC;
-  const holdPast = spd * PEEK_HOLD_PAST_SEC;
-
-  const indices = [...columnGapPlan.keys()].sort((a, b) => a - b);
-  let clusterStart = null;
-  let clusterEnd = null;
-  let firstGapStart = null;
-
-  for (const idx of indices) {
-    const gaps = columnGapPlan.get(idx);
-    if (!gaps || !gaps[li]) continue;
-    const cx = idx * SEGMENT_LEN;
-    const gapStart = cx - SEGMENT_LEN / 2;
-    const gapEnd = cx + SEGMENT_LEN / 2;
-    if (gapEnd < carX - 1.5) continue; // fully behind
-
-    if (clusterStart === null) {
-      // Only arm once the lead-in is near; ignore far-future gaps
-      if (gapStart - carX > leadDist + SEGMENT_LEN * 1.25) break;
-      clusterStart = gapStart - leadDist;
-      clusterEnd = gapEnd + holdPast;
-      firstGapStart = gapStart;
-    } else if (gapStart - (clusterEnd - holdPast) <= mergeDist) {
-      clusterEnd = gapEnd + holdPast;
-    } else {
-      break;
-    }
-  }
-
-  if (clusterStart === null) return null;
-  return {
-    startX: clusterStart,
-    endX: clusterEnd,
-    gapStart: firstGapStart,
-    level: li,
-  };
-}
-
-function updateCamPeek(dt) {
-  if (!state.running || state.dead) {
-    camPeekWindow = null;
-    camPeek = THREE.MathUtils.lerp(camPeek, 0, 1 - Math.pow(0.02, dt));
-    return;
-  }
-
-  camPeekWindow = findCamPeekWindow(roadster.position.x, state.speed);
-  let want = 0;
-  if (camPeekWindow) {
-    const x = roadster.position.x;
-    if (x >= camPeekWindow.startX && x <= camPeekWindow.endX) want = 1;
-  }
-
-  // Smooth ease toward peek / back to default — quick rise, soft landing
-  const toward = want > camPeek + 0.01;
-  const follow = toward ? 0.0008 : 0.018;
-  camPeek = THREE.MathUtils.lerp(camPeek, want, 1 - Math.pow(follow, dt));
-  if (camPeek < 0.001) camPeek = 0;
-  if (camPeek > 0.999 && want === 1) camPeek = 1;
-}
-
 function updateCamera(dt) {
-  // Subway Surfers–style chase: directly behind the car, centered on the lane,
-  // slightly above (or below when inverted), looking ahead. Car fills lower-middle.
-  // Optional peek: briefly raise + pull back when a support-surface gap approaches.
-  updateCamPeek(dt);
-
+  // Side-offset chase (pre–Subway-Surfers framing): camera left of the car so
+  // stacked decks / upper levels stay readable upright and inverted.
   const portrait = camera.aspect < 0.9;
-  const baseFov = portrait ? 54 : 48;
-  const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.4;
-  const p = camPeek * camPeek * (3 - 2 * camPeek); // smoothstep
-  const peekFov = portrait ? 9 : 7;
-  camera.fov = THREE.MathUtils.lerp(
-    camera.fov,
-    speedFov + peekFov * p,
-    1 - Math.pow(0.05, dt)
-  );
+  const baseFov = portrait ? 52 : 48;
+  const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.55;
+  camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
   camera.updateProjectionMatrix();
 
-  // Subway Surfers: camera sits on the lane centerline, close behind the car
-  // so the Roadster fills the lower-middle of the frame (not a side vista).
-  let backX = portrait ? -7.0 : -5.4;
-  const sideZ = 0;
+  const backX = portrait ? -9.0 : -6.8;
+  // Left of the car (historical side chase) but tight enough that decks fill the frame
+  // instead of the cam-side apron/ground strip.
+  const sideZ = portrait ? -15.5 : -11.8;
   const inv = state.inverted || state.flipping;
-  let desiredY = inv
-    ? state.y - (portrait ? 1.45 : 1.15)
-    : state.y + (portrait ? 1.85 : 1.55);
-
-  // Peek: pull back and raise (or drop when inverted) to read other levels ahead.
-  // Keep the car in the lower frame while clearing the near deck edge.
-  const peekBack = portrait ? 3.4 : 2.8;
-  const peekRaise = portrait ? 4.2 : 3.6;
-  backX -= peekBack * p;
-  if (inv) desiredY -= peekRaise * p;
-  else desiredY += peekRaise * p;
-
+  const desiredY = inv
+    ? state.y - (portrait ? 1.55 : 1.25)
+    : state.y + (portrait ? 2.55 : 2.25);
   const desired = new THREE.Vector3(
     roadster.position.x + backX,
     desiredY,
     roadster.position.z + sideZ
   );
-  // Snappier while peeking so the rise/pull-back reads clearly on mobile
-  const camFollow = p > 0.15 ? 0.01 : inv ? 0.03 : 0.12;
+  const camFollow = inv ? 0.02 : 0.08;
   camPos.lerp(desired, 1 - Math.pow(camFollow, dt));
   camera.position.copy(camPos);
-
-  const lookAhead = (portrait ? 8.5 : 7.5) + 1.8 * p;
-  let lookY = state.y + (inv ? -0.12 : 0.28);
-  // Aim peek look toward mid-stack so pavement on other levels is readable
-  if (inv) lookY -= (portrait ? 3.0 : 2.5) * p;
-  else lookY += (portrait ? 3.4 : 2.9) * p;
-  camTarget.set(roadster.position.x + lookAhead, lookY, roadster.position.z);
+  // Aim into the stacked roads (slightly toward lane center), not the grey apron
+  camTarget.set(
+    roadster.position.x + (portrait ? 11 : 10),
+    state.y + (inv ? (portrait ? 0.05 : 0.15) : portrait ? 2.0 : 1.75),
+    roadster.position.z + (portrait ? 1.2 : 0.9)
+  );
   camera.lookAt(camTarget);
 
   sun.target.position.copy(roadster.position);
-  sun.position.set(roadster.position.x - 18, 50, roadster.position.z + 8);
+  sun.position.set(roadster.position.x - 20, 55, roadster.position.z - 10);
   sun.target.updateMatrixWorld();
 }
 
@@ -3232,8 +3311,6 @@ function die(reason) {
   state.dead = true;
   state.running = false;
   state.reason = reason;
-  camPeek = 0;
-  camPeekWindow = null;
   if (state.time > bestTime) {
     bestTime = state.time;
     try {
@@ -3293,8 +3370,6 @@ function startGame() {
     camera.position.copy(camPos);
     camera.fov = 48;
     camera.updateProjectionMatrix();
-    camPeek = 0;
-    camPeekWindow = null;
 
     resetWorld();
     updateHUD();
@@ -3525,78 +3600,98 @@ function exposeAPI() {
       thrustLevel: roadster.userData.thrustLevel || 0,
       thrustHold: roadster.userData.thrustHold || 0,
       thrustVisible: anyThrustVisible(),
-      camPeek,
       camY: camera.position.y,
       camX: camera.position.x,
+      camZ: camera.position.z,
     }),
-    /** Peek test helper: place car before a support-surface gap with invuln. */
-    setupCamPeekTest(level = 0, inverted = false) {
+    /**
+     * Place the car near a soffit ceiling hazard for screenshots / checks.
+     * Forces a hanging obstacle ahead on `level` if none exists yet.
+     */
+    setupCeilingObstacleShot(level = 0, inverted = false, kind = "sign") {
       this.startGame();
-      this.extendPlan(28);
+      this.extendPlan(24);
       this.setLevel(level, inverted);
       state.invuln = 120;
       state.speed = state.baseSpeed;
-      const li = inverted
-        ? level < LEVELS.length - 1
-          ? level + 1
-          : level
-        : level;
-      // Prefer a nearby planned gap; otherwise force one so the peek window is short
-      const indices = [...columnGapPlan.keys()].sort((a, b) => a - b);
-      let gapIdx = null;
-      for (const idx of indices) {
-        if (idx < 4 || idx > 12) continue;
-        const gaps = columnGapPlan.get(idx);
-        if (gaps?.[li]) {
-          gapIdx = idx;
-          break;
+      // Always place the requested soffit prop ahead so screenshots are deterministic
+      let hazX = null;
+      const hazKind = kind;
+      {
+        const idx = 6;
+        const xCenter = idx * SEGMENT_LEN;
+        // Clear any prior ceiling hazards on this column/level
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          const o = obstacles[i];
+          if (!o.userData?.onCeiling || o.userData.level !== level) continue;
+          if (Math.abs(o.position.x - xCenter) > SEGMENT_LEN * 0.6) continue;
+          worldRoot.remove(o);
+          obstacles.splice(i, 1);
         }
-      }
-      if (gapIdx === null) {
-        gapIdx = 7;
-        const forced = [false, false, false];
-        forced[li] = true;
-        columnGapPlan.set(gapIdx, forced);
-        const xCenter = gapIdx * SEGMENT_LEN;
-        for (let i = segments.length - 1; i >= 0; i--) {
-          const s = segments[i];
-          if (s.userData.levelIndex === li && Math.abs(s.position.x - xCenter) < 1) {
-            worldRoot.remove(s);
-            segments.splice(i, 1);
+        const gaps = (columnGapPlan.get(idx) || [false, false, false]).slice();
+        const deck = ceilingSupportDeck(level);
+        // Ensure floor option stays open on this drive-level so the column remains survivable
+        gaps[level] = false;
+        gaps[deck] = false;
+        columnGapPlan.set(idx, gaps);
+        // Ensure soffit deck mesh exists for the hanging prop
+        for (const li of [level, deck]) {
+          let hasSolid = false;
+          for (let i = segments.length - 1; i >= 0; i--) {
+            const s = segments[i];
+            if (s.userData.levelIndex !== li) continue;
+            if (Math.abs(s.position.x - xCenter) >= 1) continue;
+            if (s.userData.hasGap) {
+              worldRoot.remove(s);
+              segments.splice(i, 1);
+            } else {
+              hasSolid = true;
+            }
+          }
+          if (!hasSolid) {
+            const solid = createDeckSurface(li, xCenter);
+            worldRoot.add(solid);
+            segments.push(solid);
           }
         }
-        const marker = new THREE.Group();
-        marker.position.set(xCenter, 0, 0);
-        marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
-        worldRoot.add(marker);
-        segments.push(marker);
+        const haz = columnHazardPlan.get(idx) || emptyHazardFlags();
+        haz.ceil[level] = true;
+        haz.floor[level] = false;
+        columnHazardPlan.set(idx, haz);
+        const obst = makeHangingSoffitHazard(level, kind);
+        obst.position.set(xCenter, 0, 0);
+        worldRoot.add(obst);
+        obstacles.push(obst);
+        lastCeilObsCol[level] = idx;
+        hazX = xCenter;
       }
-      const gapStart = gapIdx * SEGMENT_LEN - SEGMENT_LEN / 2;
-      const lead = state.speed * PEEK_LEAD_SEC;
-      roadster.position.x = gapStart - lead - 4;
+      roadster.position.x = hazX - 14;
       roadster.position.y = surfaceY(level, inverted);
       state.y = roadster.position.y;
-      camPeek = 0;
-      camPeekWindow = null;
-      // Snap to default chase framing (avoid startGame cam lerp fighting the peek test)
-      const backX = -5.4;
-      const defY = inverted ? state.y - 1.15 : state.y + 1.55;
-      camPos.set(roadster.position.x + backX, defY, 0);
+      const backX = -6.8;
+      const sideZ = -11.8;
+      const defY = inverted ? state.y - 1.25 : state.y + 2.25;
+      camPos.set(roadster.position.x + backX, defY, sideZ);
       camera.position.copy(camPos);
       camera.fov = 48;
       camera.updateProjectionMatrix();
-      camTarget.set(roadster.position.x + 7, state.y + (inverted ? -0.12 : 0.28), 0);
+      camTarget.set(
+        roadster.position.x + 10,
+        state.y + (inverted ? 0.15 : 1.75),
+        roadster.position.z + 0.9
+      );
       camera.lookAt(camTarget);
+      updateBuildingCutaway();
       renderFrame();
       return {
-        gapIdx,
-        gapX: gapIdx * SEGMENT_LEN,
-        gapStart,
+        hazX,
+        kind: hazKind,
         carX: roadster.position.x,
-        supportLevel: li,
+        level,
+        inverted: !!inverted,
         camY: camera.position.y,
-        camX: camera.position.x,
-        camPeek,
+        camZ: camera.position.z,
+        plan: validateGapPlan(),
       };
     },
     pressUp: () => {
@@ -3615,6 +3710,12 @@ function exposeAPI() {
       input.down = true;
     },
     validateGapPlan,
+    /** Count soffit (ceiling) hazards currently in the world. */
+    countCeilingHazards() {
+      let n = 0;
+      for (const o of obstacles) if (o.userData?.onCeiling) n++;
+      return n;
+    },
     minOverlapDist,
     /** Force-generate columns ahead so the plan can be validated far out. */
     extendPlan(cols = 40) {
