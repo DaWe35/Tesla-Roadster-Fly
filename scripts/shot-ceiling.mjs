@@ -1,5 +1,6 @@
 /**
- * Capture upright + inverted side-chase views with a soffit ceiling obstacle.
+ * Capture upright + inverted side-chase views: clear car (no left occluders),
+ * cold-gas thruster jets visible, ceiling hazard ahead.
  */
 import puppeteer from "puppeteer";
 import http from "http";
@@ -60,16 +61,18 @@ const result = await page.evaluate(() => {
   const canvas = document.getElementById("game-canvas");
   R.simulating = true;
 
-  // Drive a bit toward the hazard so it's clearly ahead in frame
   const upright = R.setupCeilingObstacleShot(0, false, "sign");
-  // Nudge closer so the soffit hazard reads clearly ahead of the car
-  for (let i = 0; i < 32; i++) R.simulate(1 / 60, { render: false });
+  for (let i = 0; i < 28; i++) R.simulate(1 / 60, { render: false });
+  R.pulseThrusters(1.2);
+  for (let i = 0; i < 8; i++) R.simulate(1 / 60, { render: false });
   R.simulate(1 / 60);
   const uprightPng = canvas.toDataURL("image/png");
   const uprightState = R.getState();
 
   const inverted = R.setupCeilingObstacleShot(0, true, "pipe");
-  for (let i = 0; i < 32; i++) R.simulate(1 / 60, { render: false });
+  for (let i = 0; i < 28; i++) R.simulate(1 / 60, { render: false });
+  R.pulseThrusters(1.2);
+  for (let i = 0; i < 8; i++) R.simulate(1 / 60, { render: false });
   R.simulate(1 / 60);
   const invertedPng = canvas.toDataURL("image/png");
   const invertedState = R.getState();
@@ -83,12 +86,14 @@ const result = await page.evaluate(() => {
       camZ: uprightState.camZ,
       camY: uprightState.camY,
       y: uprightState.y,
+      thrustVisible: uprightState.thrustVisible,
     },
     invertedState: {
       inverted: invertedState.inverted,
       camZ: invertedState.camZ,
       camY: invertedState.camY,
       y: invertedState.y,
+      thrustVisible: invertedState.thrustVisible,
     },
     uprightPng,
     invertedPng,
@@ -97,8 +102,14 @@ const result = await page.evaluate(() => {
 
 console.log("upright", result.upright, result.uprightState);
 console.log("inverted", result.inverted, result.invertedState);
+if (!result.uprightState.thrustVisible) throw new Error("upright jets not visible");
+if (!result.invertedState.thrustVisible) throw new Error("inverted jets not visible");
+
 saveDataUrl(result.uprightPng, path.join(out, "cam_side_upright_ceil.png"));
 saveDataUrl(result.invertedPng, path.join(out, "cam_side_inverted_ceil.png"));
+// Also publish under clear names for the walkthrough
+saveDataUrl(result.uprightPng, path.join(out, "clear_upright_jets.png"));
+saveDataUrl(result.invertedPng, path.join(out, "clear_inverted_jets.png"));
 
 await browser.close();
 server.close();

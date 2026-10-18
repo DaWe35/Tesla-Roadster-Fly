@@ -763,10 +763,14 @@ function createEmptyThrusterData(body) {
     secondaryPorts.push(port);
   }
 
-  // 4 downward nozzles near rear corners (2 per side) under bumper
+  // 4 downward nozzles near rear corners (2 per side) under bumper —
+  // cold-gas jets attach here so they flip correctly when inverted.
   const nozzles = [];
   const tipGlows = [];
   const jetLights = [];
+  const jetCores = [];
+  const jetHalos = [];
+  const jetDiamonds = [];
   const nozzleSpecs = [
     { z: -0.72, x: 0.05 },
     { z: -0.42, x: 0.02 },
@@ -788,17 +792,73 @@ function createEmptyThrusterData(body) {
     tip.position.y = -0.1;
     nz.add(tip);
     tipGlows.push(tip);
+
+    // Tight bright white-blue core (pressurised cold-gas look)
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: 0xb8e0ff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    // Short narrow core — keep luminance modest so UnrealBloom doesn't blob it
+    const core = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.009, 0.02, 0.48, 8),
+      coreMat
+    );
+    core.position.y = -0.36;
+    core.visible = false;
+    nz.add(core);
+    jetCores.push(core);
+
+    // Soft cyan halo — normal blend so bloom doesn't inflate it into a cloud
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0x6ab4f0,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+    const halo = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.014, 0.028, 0.44, 8),
+      haloMat
+    );
+    halo.position.y = -0.34;
+    halo.visible = false;
+    nz.add(halo);
+    jetHalos.push(halo);
+
+    // Shock-diamond beads along the jet
+    const diamonds = [];
+    for (let d = 0; d < 4; d++) {
+      const bead = new THREE.Mesh(
+        new THREE.SphereGeometry(0.011 - d * 0.0012, 6, 6),
+        new THREE.MeshBasicMaterial({
+          color: 0xd8f0ff,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        })
+      );
+      bead.position.y = -0.2 - d * 0.09;
+      bead.visible = false;
+      nz.add(bead);
+      diamonds.push(bead);
+    }
+    jetDiamonds.push(diamonds);
+
     nz.position.set(spec.x, -0.05, spec.z);
     thrusterBay.add(nz);
     nozzles.push(nz);
 
-    const light = new THREE.PointLight(0xff6020, 0, 2.8);
-    light.position.set(spec.x, -0.14, spec.z);
+    const light = new THREE.PointLight(0xb8e8ff, 0, 2.4);
+    light.position.set(spec.x, -0.2, spec.z);
     thrusterBay.add(light);
     jetLights.push(light);
   }
 
-  // Plume markers (visibility API) — actual shafts are sprite stacks (kind 0)
+  // Plume markers (visibility API) — jet meshes live on nozzles
   const plumes = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group();
@@ -806,11 +866,11 @@ function createEmptyThrusterData(body) {
     group.position.y -= 0.1;
     group.visible = false;
     thrusterBay.add(group);
-    plumes.push({ group, tip: tipGlows[i] });
+    plumes.push({ group, tip: tipGlows[i], core: jetCores[i], halo: jetHalos[i] });
   }
 
-  // Soft volumetric sprite pool: 0=jet shaft, 1=ground cloud, 2=trail, 3=side puff
-  const vaporCount = QUALITY === "low" ? 96 : 160;
+  // Sparse sprite pool: kind 0 unused (mesh jets), 1=tiny surface wisp only
+  const vaporCount = QUALITY === "low" ? 24 : 40;
   const vaporSprites = [];
   const vaporLife = new Float32Array(vaporCount);
   const vaporMax = new Float32Array(vaporCount);
@@ -867,6 +927,9 @@ function createEmptyThrusterData(body) {
     secondaryPorts,
     tipGlows,
     jetLights,
+    jetCores,
+    jetHalos,
+    jetDiamonds,
     plumes,
     jets,
     jetPos,
@@ -1329,12 +1392,13 @@ function makeBridge(levelY) {
     roughness: 0.78,
     metalness: 0.1,
   });
-  for (const z of [-3.2, 3.2]) {
+  // Support pillar on the right (+Z) only — left pillar would occlude the side cam
+  {
     const pillar = new THREE.Mesh(
       new THREE.BoxGeometry(1.2, levelY + 2.0, 1.0),
       pillarMat
     );
-    pillar.position.set(0, (levelY + 2.0) / 2, z);
+    pillar.position.set(0, (levelY + 2.0) / 2, 3.2);
     pillar.castShadow = true;
     g.add(pillar);
   }
@@ -1936,9 +2000,9 @@ function createDeckSurface(levelIndex, zCenter) {
     curb.receiveShadow = true;
     g.add(curb);
 
-    // Outer vertical fascia on elevated decks
-    if (levelIndex > 0) {
-      // Continuous solid side wall — closes gaps that read as "glass decks"
+    // Outer vertical fascia + support pillars ONLY on the +Z (right) side.
+    // Camera-side (−Z) pillars/walls sit between the lens and the car.
+    if (levelIndex > 0 && side > 0) {
       const wallMat = pbrFrom(maps.concreteWall, SEGMENT_LEN / 6, 1.4, {
         color: 0xb8c0c8,
         metalness: 0,
@@ -2017,7 +2081,8 @@ function createDeckSurface(levelIndex, zCenter) {
 
     for (const side of [-1, 1]) {
       const s = side;
-      // Curb block with tall vertical face toward the road (chase-cam readable)
+      // Low curb/walk on both sides (doesn't blind the side cam). Tall props
+      // and planters stay on +Z only so −Z stays a clear camera corridor.
       const curbH = curbTop - (ly - 0.08);
       const curb = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN + 0.04, curbH, curbW),
@@ -2028,7 +2093,6 @@ function createDeckSurface(levelIndex, zCenter) {
       curb.receiveShadow = true;
       g.add(curb);
 
-      // Paved sidewalk — top clearly above apron, no shared plane with ground fill
       const walk = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.14, walkW),
         walkMat
@@ -2042,7 +2106,8 @@ function createDeckSurface(levelIndex, zCenter) {
       walk.receiveShadow = true;
       g.add(walk);
 
-      // Building-frontage apron (concrete), lower than sidewalk
+      if (s < 0) continue; // camera corridor — no apron props / shops on −Z
+
       const apron = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN + 0.04, 0.1, apronW),
         apronMat
@@ -2055,7 +2120,6 @@ function createDeckSurface(levelIndex, zCenter) {
       apron.receiveShadow = true;
       g.add(apron);
 
-      // Planters on sidewalk top only
       for (let i = 0; i < 3; i++) {
         const pot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.32, 0.4), potMat);
         pot.position.set(
@@ -2068,8 +2132,7 @@ function createDeckSurface(levelIndex, zCenter) {
         g.add(pot);
       }
 
-      // Shop frontage ONLY on the far side (+Z). Camera chases from −Z — a
-      // continuous wall there walls off the track and fills the foreground.
+      // Shop frontage ONLY on the far side (+Z).
       if (s > 0) {
         const frontZ = roadHalf + curbW + walkW + apronW + 0.4;
         const storeMat = pbrFrom(maps.brick, SEGMENT_LEN / 3, 2.5, {
@@ -2158,38 +2221,34 @@ function createGroundStrip(zCenter) {
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
-  // Camera chases from negative Z. Buildings start just past the street apron (~9)
-  // so the chase cam sees shop frontage, not empty gravel.
-  const CAM_SIDE_CLEAR = 11;
+  // Side-chase cam sits on −Z. Never spawn buildings (or any tall props) on the
+  // left/camera side — they sit between the lens and the car and blind the view.
+  // Keep full scenery on the +Z / right side of the track only.
   const FAR_SIDE_MIN = 10;
-  for (const side of [-1, 1]) {
-    let x = -SEGMENT_LEN / 2 + 2;
-    while (x < SEGMENT_LEN / 2 - 2) {
-      const w = 2.2 + Math.random() * 4.2;
-      const d = 2.2 + Math.random() * 4.0;
-      // Varied skyline: short shops mixed with taller towers
-      const h =
-        Math.random() < 0.22
-          ? 3 + Math.random() * 4
-          : Math.random() < 0.55
-            ? 7 + Math.random() * 10
-            : 14 + Math.random() * 16;
-      const b = makeBuilding(
-        w,
-        h,
-        d,
-        BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
-      );
-      const base = side < 0 ? CAM_SIDE_CLEAR : FAR_SIDE_MIN;
-      const jitter = side < 0 ? Math.random() * 6 : Math.random() * 4;
-      b.position.set(x, 0, side * (base + d / 2 + jitter));
-      b.rotation.y = side > 0 ? 0 : Math.PI;
-      b.userData.cameraSide = side < 0;
-      g.add(b);
-      x += w + 1.2 + Math.random() * 2;
-    }
+  let x = -SEGMENT_LEN / 2 + 2;
+  while (x < SEGMENT_LEN / 2 - 2) {
+    const w = 2.2 + Math.random() * 4.2;
+    const d = 2.2 + Math.random() * 4.0;
+    const h =
+      Math.random() < 0.22
+        ? 3 + Math.random() * 4
+        : Math.random() < 0.55
+          ? 7 + Math.random() * 10
+          : 14 + Math.random() * 16;
+    const b = makeBuilding(
+      w,
+      h,
+      d,
+      BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
+    );
+    const jitter = Math.random() * 4;
+    b.position.set(x, 0, FAR_SIDE_MIN + d / 2 + jitter);
+    b.rotation.y = 0;
+    b.userData.cameraSide = false;
+    g.add(b);
+    x += w + 1.2 + Math.random() * 2;
   }
-  // Distant backdrop towers — denser on both sides so horizon isn't empty
+  // Distant backdrop towers — right side only
   for (let i = 0; i < 7; i++) {
     const h = 12 + Math.random() * 24;
     const d = 3 + Math.random() * 5;
@@ -2199,31 +2258,9 @@ function createCityBlock(zCenter) {
       d,
       BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
     );
-    const camSide = i % 2 === 0 || Math.random() > 0.4;
-    const dist = camSide ? 30 + Math.random() * 18 : 22 + Math.random() * 16;
-    b.position.set(
-      -SEGMENT_LEN / 2 + 2 + i * 4,
-      0,
-      (camSide ? -1 : 1) * dist
-    );
-    b.userData.cameraSide = camSide;
-    g.add(b);
-  }
-  // Extra far skyline ring (behind chase cam) — fills left void
-  for (let i = 0; i < 5; i++) {
-    const h = 18 + Math.random() * 28;
-    const b = makeBuilding(
-      4 + Math.random() * 5,
-      h,
-      4 + Math.random() * 4,
-      BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
-    );
-    b.position.set(
-      -SEGMENT_LEN / 2 + 3 + i * 5.5,
-      0,
-      -(42 + Math.random() * 14)
-    );
-    b.userData.cameraSide = true;
+    const dist = 22 + Math.random() * 16;
+    b.position.set(-SEGMENT_LEN / 2 + 2 + i * 4, 0, dist);
+    b.userData.cameraSide = false;
     g.add(b);
   }
   g.position.x = zCenter;
@@ -2908,16 +2945,15 @@ function updateTrains(dt) {
 
 
 /**
- * Thrusters (visual only) — McGregor press look:
- * dense opaque white jet columns, red-hot tips, ground/ceiling impact clouds,
- * lingering world-space trails, lateral side puffs on flips.
- * kind: 0=jet puff along column, 1=ground/ceiling cloud, 2=trail, 3=side puff
+ * Thrusters (visual only) — 2026 Roadster cold-gas / rocket-steering look:
+ * thin tight white-blue jets from rear underside nozzles, pointing away from
+ * the road surface; at most a tiny quickly-fading surface wisp (never a cloud).
+ * kind: 1 = surface wisp only
  */
 function burstThrusters(amount = 1, hold = 0.45) {
   const ud = roadster.userData;
   ud.thrustLevel = Math.max(ud.thrustLevel || 0, amount);
   ud.thrustHold = Math.max(ud.thrustHold || 0, hold);
-  if (state.flipping) ud.sidePuffT = Math.max(ud.sidePuffT || 0, 0.35);
 }
 
 function claimVaporSlot(ud) {
@@ -2939,18 +2975,16 @@ function spawnVaporAt(ud, kind, x, y, z, vx, vy, vz, scale, life, opacity = 0.9)
   ud.vaporVel[slot * 3 + 1] = vy;
   ud.vaporVel[slot * 3 + 2] = vz;
   spr.position.set(x, y, z);
-  spr.scale.setScalar(scale);
+  spr.scale.set(scale * 1.4, scale * 0.55, scale);
   spr.material.opacity = opacity;
-  spr.material.color.setHex(0xffffff);
-  // Shafts use additive for bright opaque jet cores; clouds stay normal soft
-  spr.material.blending = kind === 0 ? THREE.AdditiveBlending : THREE.NormalBlending;
+  spr.material.color.setHex(0xd8eef8);
+  spr.material.blending = THREE.NormalBlending;
   spr.visible = true;
 }
 
 function updateThrusters(dt) {
   const ud = roadster.userData;
   if (ud.thrustHold > 0) ud.thrustHold -= dt;
-  if (ud.sidePuffT > 0) ud.sidePuffT -= dt;
 
   let target = 0;
   if (state.hopping || state.flipping) target = 1;
@@ -2964,6 +2998,7 @@ function updateThrusters(dt) {
   }
   const lvl = ud.thrustLevel || 0;
   const active = lvl > 0.04;
+  const flicker = 0.85 + 0.15 * Math.sin(state.time * 48 + lvl * 7);
 
   const { body, _q, _belly, _side, _fwd, _origin } = ud;
   body.updateWorldMatrix(true, false);
@@ -2972,142 +3007,81 @@ function updateThrusters(dt) {
   _side.set(0, 0, 1).applyQuaternion(_q);
   _fwd.set(1, 0, 0).applyQuaternion(_q);
 
-  // Red/orange hot tips + lights while firing
+  // White-blue tip glow + soft lights (cold-gas, not orange flame)
   for (let i = 0; i < ud.jetLights.length; i++) {
     const light = ud.jetLights[i];
-    light.intensity = active ? 0.5 + lvl * 1.4 : 0;
-    light.distance = 2.2 + lvl * 1.5;
-    light.color.setHex(0xff4a18);
+    light.intensity = active ? (0.18 + lvl * 0.35) * flicker : 0;
+    light.distance = 1.2 + lvl * 0.5;
+    light.color.setHex(0x9ad4ff);
     const tip = ud.tipGlows?.[i];
     if (tip?.material) {
-      tip.material.emissive.setHex(active ? 0xff3a10 : 0x000000);
-      tip.material.emissiveIntensity = active ? 1.2 + lvl * 2.5 : 0;
-      tip.material.color.setHex(active ? 0xff6020 : 0x2a2e34);
+      tip.material.emissive.setHex(active ? 0x7ec8ff : 0x000000);
+      tip.material.emissiveIntensity = active ? 0.45 + lvl * 0.7 : 0;
+      tip.material.color.setHex(active ? 0xa8d8f0 : 0x2a2e34);
+    }
+
+    const core = ud.jetCores?.[i];
+    const halo = ud.jetHalos?.[i];
+    if (core) {
+      core.visible = active;
+      core.material.opacity = active ? (0.55 + lvl * 0.25) * flicker : 0;
+      core.scale.set(1, 0.92 + lvl * 0.12, 1);
+    }
+    if (halo) {
+      halo.visible = active;
+      halo.material.opacity = active ? (0.22 + lvl * 0.12) * flicker : 0;
+      halo.scale.set(1, 0.92 + lvl * 0.1, 1);
+    }
+    const diamonds = ud.jetDiamonds?.[i];
+    if (diamonds) {
+      for (let d = 0; d < diamonds.length; d++) {
+        const bead = diamonds[d];
+        const pulse = 0.55 + 0.45 * Math.sin(state.time * (38 + d * 9) + i + d);
+        bead.visible = active;
+        bead.material.opacity = active ? (0.35 - d * 0.05) * lvl * pulse : 0;
+      }
     }
   }
 
-  // Thick volumetric jet shafts = stacked soft sprites (press-photo density)
-  const colLen = 1.15 + lvl * 1.35;
   ud.plumes.forEach((p) => {
     p.group.visible = active;
   });
 
+  // Tiny surface wisps only — never a cloud that covers car or camera
   if (active) {
-    const burst = state.hopping || state.flipping || ud.thrustHold > 0.2;
-    const sustain = state.inverted && state.running && !state.dead;
-
-    // Dense opaque white shaft sprites along each nozzle — thick, not thin cylinders
-    const shaftPerNozzle = burst ? (QUALITY === "low" ? 4 : 6) : sustain ? 4 : 3;
-    for (let n = 0; n < ud.nozzles.length; n++) {
-      const nz = ud.nozzles[n];
-      nz.getWorldPosition(_origin);
-      for (let s = 0; s < shaftPerNozzle; s++) {
-        const along = 0.04 + (s / shaftPerNozzle) * colLen;
-        const px = _origin.x + _belly.x * along;
-        const py = _origin.y + _belly.y * along;
-        const pz = _origin.z + _belly.z * along;
-        const widen = 0.32 + (s / shaftPerNozzle) * 0.35 + lvl * 0.15;
-        spawnVaporAt(
-          ud,
-          0,
-          px + (Math.random() - 0.5) * 0.04,
-          py,
-          pz + (Math.random() - 0.5) * 0.04,
-          _belly.x * (1.6 + lvl) + _fwd.x * state.speed * 0.1,
-          _belly.y * (1.6 + lvl),
-          _belly.z * (1.6 + lvl),
-          widen,
-          0.12 + Math.random() * 0.07,
-          0.95
-        );
-      }
-    }
-
-    // Rolling ground / ceiling impact cloud — big, but not a full white-out
     const impactY = state.inverted
-      ? ceilingY(state.level) - 0.06
-      : floorY(state.level) + 0.05;
-    const nearSurf =
-      Math.abs(
-        roadster.position.y -
-          (state.inverted ? ceilingY(state.level) - CAR_CLEARANCE : floorY(state.level))
-      ) < 2.2;
-    if (nearSurf || sustain || burst) {
-      const cloudN = burst ? (QUALITY === "low" ? 5 : 8) : sustain ? 5 : 3;
-      for (let s = 0; s < cloudN; s++) {
-        const nz = ud.nozzles[s % ud.nozzles.length];
-        nz.getWorldPosition(_origin);
-        // Bias cloud behind/under the car so the body stays readable
-        const px = _origin.x - _fwd.x * 0.6 + (Math.random() - 0.5) * 1.0;
-        const pz = _origin.z + (Math.random() - 0.5) * 1.6;
-        const py = impactY + (Math.random() - 0.5) * 0.08;
-        const spread = 2.2 + lvl * 2.8;
-        spawnVaporAt(
-          ud,
-          1,
-          px,
-          py,
-          pz,
-          _side.x * (Math.random() - 0.5) * spread + _fwd.x * state.speed * 0.2,
-          (Math.random() - 0.5) * 0.1,
-          _side.z * (Math.random() - 0.5) * spread + _fwd.z * state.speed * 0.2,
-          1.0 + lvl * 1.2 + Math.random() * 0.5,
-          1.0 + Math.random() * 0.7,
-          0.88
-        );
-      }
-    }
-
-    // Dense lingering trails
-    if (burst || sustain) {
-      const trailN = QUALITY === "low" ? 3 : 5;
-      for (let s = 0; s < trailN; s++) {
-        const nz = ud.nozzles[s % ud.nozzles.length];
-        nz.getWorldPosition(_origin);
-        _origin.addScaledVector(_belly, 0.25 + Math.random() * 0.45);
-        spawnVaporAt(
-          ud,
-          2,
-          _origin.x - _fwd.x * 0.55,
-          _origin.y,
-          _origin.z - _fwd.z * 0.55,
-          -_fwd.x * state.speed * 0.28 + (Math.random() - 0.5) * 0.4,
-          _belly.y * 0.5 + (Math.random() - 0.5) * 0.25,
-          -_fwd.z * state.speed * 0.28 + (Math.random() - 0.5) * 0.4,
-          0.6 + Math.random() * 0.55,
-          1.5 + Math.random() * 1.0,
-          0.78
-        );
-      }
-    }
-  }
-
-  // Lateral side puffs on flips
-  if (ud.sidePuffT > 0) {
-    const n = QUALITY === "low" ? 1 : 2;
-    for (let s = 0; s < n; s++) {
-      const sideSign = s % 2 === 0 ? 1 : -1;
-      roadster.getWorldPosition(_origin);
-      _origin.addScaledVector(_side, sideSign * 1.0);
-      _origin.y += (Math.random() - 0.5) * 0.3;
+      ? ceilingY(state.level) - 0.04
+      : floorY(state.level) + 0.03;
+    const surfY = state.inverted
+      ? ceilingY(state.level) - CAR_CLEARANCE
+      : floorY(state.level);
+    const nearSurf = Math.abs(roadster.position.y - surfY) < 1.6;
+    if (nearSurf && Math.random() < 0.12 + lvl * 0.1) {
+      const nz = ud.nozzles[(Math.random() * ud.nozzles.length) | 0];
+      nz.getWorldPosition(_origin);
+      // Impact point: along belly toward the road/ceiling
+      const hitDist = Math.min(0.85, Math.abs(_origin.y - impactY) + 0.05);
+      const px = _origin.x + _belly.x * hitDist + (Math.random() - 0.5) * 0.05;
+      const py = impactY;
+      const pz = _origin.z + _belly.z * hitDist + (Math.random() - 0.5) * 0.05;
       spawnVaporAt(
         ud,
-        3,
-        _origin.x,
-        _origin.y,
-        _origin.z,
-        _side.x * sideSign * (3 + Math.random() * 2) + _fwd.x * state.speed * 0.4,
-        (Math.random() - 0.3) * 1.2,
-        _side.z * sideSign * (3 + Math.random() * 2),
-        0.35 + Math.random() * 0.25,
-        0.45 + Math.random() * 0.25,
-        0.8
+        1,
+        px,
+        py,
+        pz,
+        _side.x * (Math.random() - 0.5) * 0.2 + _fwd.x * state.speed * 0.03,
+        _belly.y * 0.02,
+        _side.z * (Math.random() - 0.5) * 0.2,
+        0.08 + Math.random() * 0.06,
+        0.08 + Math.random() * 0.06,
+        0.22 + lvl * 0.1
       );
     }
   }
 
-  // Integrate sprites
-  const { vaporSprites, vaporLife, vaporMax, vaporVel, vaporKind, vaporCount } = ud;
+  // Integrate wisps — stay small, fade fast, no billow
+  const { vaporSprites, vaporLife, vaporMax, vaporVel, vaporCount } = ud;
   for (let i = 0; i < vaporCount; i++) {
     if (vaporLife[i] <= 0) {
       vaporSprites[i].visible = false;
@@ -3115,37 +3089,16 @@ function updateThrusters(dt) {
     }
     vaporLife[i] -= dt;
     const spr = vaporSprites[i];
-    const kind = vaporKind[i];
     const t = 1 - vaporLife[i] / Math.max(0.001, vaporMax[i]);
-
     spr.position.x += vaporVel[i * 3] * dt;
     spr.position.y += vaporVel[i * 3 + 1] * dt;
     spr.position.z += vaporVel[i * 3 + 2] * dt;
-
-    if (kind === 0) {
-      // Shaft: stay thick/opaque, slight widen — matches dense press jets
-      spr.scale.x *= 1 + dt * 0.6;
-      spr.scale.y *= 1 + dt * 1.2;
-      spr.scale.z = spr.scale.x;
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.6);
-    } else if (kind === 1) {
-      // Ground cloud: expand sideways hard, linger, soft edge fade
-      spr.scale.x *= 1 + dt * 5.2;
-      spr.scale.y *= 1 + dt * 1.6;
-      spr.scale.z = spr.scale.x;
-      vaporVel[i * 3] *= 1 - dt * 0.55;
-      vaporVel[i * 3 + 1] *= 1 - dt * 2.4;
-      vaporVel[i * 3 + 2] *= 1 - dt * 0.55;
-      spr.material.opacity = Math.max(0, (1 - t * t) * 0.98);
-    } else if (kind === 2) {
-      spr.scale.multiplyScalar(1 + dt * 2.6);
-      vaporVel[i * 3 + 1] += Math.sin(t * 6 + i) * dt * 0.5;
-      spr.material.opacity = Math.max(0, (1 - t) * 0.82);
-    } else {
-      spr.scale.multiplyScalar(1 + dt * 4.5);
-      spr.material.opacity = Math.max(0, spr.material.opacity - dt * 2.0);
-    }
-
+    spr.scale.x *= 1 + dt * 1.8;
+    spr.scale.z = spr.scale.x;
+    spr.scale.y *= 1 + dt * 0.6;
+    vaporVel[i * 3] *= 1 - dt * 2.5;
+    vaporVel[i * 3 + 2] *= 1 - dt * 2.5;
+    spr.material.opacity = Math.max(0, (1 - t) * (1 - t) * 0.4);
     if (vaporLife[i] <= 0 || spr.material.opacity < 0.02) {
       vaporLife[i] = 0;
       spr.visible = false;
@@ -3153,7 +3106,7 @@ function updateThrusters(dt) {
     }
   }
 
-  const { jetPos, jetLife, jetCount, jets } = ud;
+  const { jetPos, jetCount, jets } = ud;
   for (let i = 0; i < jetCount; i++) jetPos[i * 3 + 1] = -40;
   jets.geometry.attributes.position.needsUpdate = true;
   jets.material.opacity = 0;
@@ -3162,6 +3115,7 @@ function updateThrusters(dt) {
 function anyThrustVisible() {
   const ud = roadster.userData;
   if ((ud.plumes || []).some((p) => p.group.visible)) return true;
+  if ((ud.jetCores || []).some((c) => c.visible && c.material.opacity > 0.05)) return true;
   if ((ud.vaporSprites || []).some((s) => s.visible && s.material.opacity > 0.05)) return true;
   return false;
 }
@@ -3708,6 +3662,10 @@ function exposeAPI() {
     },
     pressDrop: () => {
       input.down = true;
+    },
+    /** Visual-only thruster pulse for screenshots / verify. */
+    pulseThrusters(hold = 0.9) {
+      burstThrusters(1, hold);
     },
     validateGapPlan,
     /** Count soffit (ceiling) hazards currently in the world. */
