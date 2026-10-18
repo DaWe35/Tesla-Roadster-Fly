@@ -1,10 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
-import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
-import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 /* ─────────────────────────────────────────────────────────────
    Roadster Rise — vertical-level 3D runner
@@ -26,8 +22,8 @@ const HOP_DURATION = 0.12; // near-instant level change
 const FLIP_DURATION = 0.22;
 const REACTION_TIME = 0.45; // human reaction budget before a gap
 const SEGMENT_LEN = 28;
-const SEGMENTS_AHEAD = 12;
-const SEGMENTS_BEHIND = 4;
+const SEGMENTS_AHEAD = 10;
+const SEGMENTS_BEHIND = 3;
 
 function floorY(level) {
   return LEVELS[level].y;
@@ -86,20 +82,33 @@ let QUALITY =
     : isMobile || lowPower
       ? "low"
       : "high";
-let PIXEL_CAP = QUALITY === "low" ? 1.25 : 1.75;
-const SHADOW_MAP = QUALITY === "low" ? 512 : 1024;
-let SHADOW_SOFT = QUALITY === "high";
+// Desktop caps at 1.5; mobile/low ~1.0. Adaptive scale drops further under load.
+let PIXEL_CAP = QUALITY === "low" || isMobile ? 1.0 : 1.5;
+const SHADOW_MAP = QUALITY === "low" ? 256 : 512;
+let SHADOW_SOFT = false; // hard shadows — much cheaper, look stays readable
+let RES_SCALE = 1;
+let _lastPixelRatio = -1;
+let composer = null;
+let bloomPass = null;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: QUALITY === "high",
+  antialias: QUALITY === "high" && !isMobile,
   powerPreference: "high-performance",
   alpha: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_CAP));
-renderer.setSize(window.innerWidth, window.innerHeight);
+function applyPixelRatio() {
+  const pr = Math.min(window.devicePixelRatio || 1, PIXEL_CAP) * RES_SCALE;
+  if (Math.abs(pr - _lastPixelRatio) < 0.02) return;
+  _lastPixelRatio = pr;
+  renderer.setPixelRatio(pr);
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
+  if (bloomPass) bloomPass.setSize(window.innerWidth, window.innerHeight);
+}
+applyPixelRatio();
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
+renderer.shadowMap.type = THREE.BasicShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -143,21 +152,55 @@ function finishLoadingUI() {
 
 /* ── Texture helpers ──────────────────────────────────────── */
 const textureLoader = new THREE.TextureLoader();
-const maxAniso = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 1);
+const maxAniso = Math.min(
+  QUALITY === "low" || isMobile ? 2 : 4,
+  renderer.capabilities.getMaxAnisotropy?.() || 1
+);
+const TEX_MAX = QUALITY === "low" || isMobile ? 512 : 640;
+const mapCloneCache = new Map();
+const matCache = new Map();
+
+/** Downsize large source images to TEX_MAX so GPU memory stays bounded. */
+function downsizeTexture(tex, maxSize = TEX_MAX) {
+  const img = tex.image;
+  if (!img || !img.width) return tex;
+  const w = img.width;
+  const h = img.height;
+  if (w <= maxSize && h <= maxSize) return tex;
+  const scale = maxSize / Math.max(w, h);
+  const nw = Math.max(1, Math.round(w * scale));
+  const nh = Math.max(1, Math.round(h * scale));
+  const c = document.createElement("canvas");
+  c.width = nw;
+  c.height = nh;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, nw, nh);
+  tex.image = c;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 function prepColorMap(tex, repeatX = 1, repeatY = 1) {
+  downsizeTexture(tex);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
   tex.anisotropy = maxAniso;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   return tex;
 }
 
 function prepDataMap(tex, repeatX = 1, repeatY = 1) {
+  downsizeTexture(tex);
   tex.colorSpace = THREE.NoColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
   tex.anisotropy = maxAniso;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   return tex;
 }
 
@@ -174,11 +217,15 @@ function loadTexture(url, prep = prepColorMap) {
 
 function cloneMap(src, repeatX, repeatY) {
   if (!src) return null;
-  const t = src.clone();
+  const key = `${src.uuid}|${repeatX}|${repeatY}`;
+  let t = mapCloneCache.get(key);
+  if (t) return t;
+  t = src.clone();
   t.needsUpdate = true;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(repeatX, repeatY);
   t.anisotropy = maxAniso;
+  mapCloneCache.set(key, t);
   return t;
 }
 
@@ -213,22 +260,46 @@ function loadMapSet(key, folder, withAo = false) {
   return jobs;
 }
 
-/** Build a MeshStandardMaterial from a map set + optional tint/params. */
+/**
+ * Build a MeshStandardMaterial from a map set + optional tint/params.
+ * Materials (and map clones) are cached by key to slash draw-call material churn.
+ * `opts.cheap` skips normal/rough/ao maps for far or small props.
+ */
 function pbrFrom(src, rx, ry, opts = {}) {
-  const mat = new THREE.MeshStandardMaterial({
+  const cheap = !!opts.cheap || QUALITY === "low";
+  const ns = opts.normalScale;
+  const key = [
+    src?.diff?.uuid || "x",
+    rx,
+    ry,
+    opts.color ?? "w",
+    opts.roughness ?? 0.85,
+    opts.metalness ?? 0.05,
+    opts.envMapIntensity ?? 0.4,
+    cheap ? "c" : "f",
+    opts.ao ? "ao" : "",
+    opts.emissive ?? "",
+    ns ? `${ns.x},${ns.y}` : "",
+  ].join("|");
+  let mat = matCache.get(key);
+  if (mat) return mat;
+  mat = new THREE.MeshStandardMaterial({
     color: opts.color ?? 0xffffff,
     map: cloneMap(src.diff, rx, ry),
-    normalMap: cloneMap(src.nor, rx, ry),
-    normalScale: opts.normalScale ?? new THREE.Vector2(1, 1),
-    roughnessMap: cloneMap(src.rough, rx, ry),
+    normalMap: cheap ? null : cloneMap(src.nor, rx, ry),
+    normalScale: ns ?? new THREE.Vector2(1, 1),
+    roughnessMap: cheap ? null : cloneMap(src.rough, rx, ry),
     roughness: opts.roughness ?? 0.85,
     metalness: opts.metalness ?? 0.05,
     envMapIntensity: opts.envMapIntensity ?? 0.4,
-    ...(opts.ao && src.ao
+    ...(!cheap && opts.ao && src.ao
       ? { aoMap: cloneMap(src.ao, rx, ry), aoMapIntensity: opts.aoMapIntensity ?? 1 }
       : {}),
-    ...(opts.emissive != null ? { emissive: opts.emissive, emissiveIntensity: opts.emissiveIntensity ?? 0.1 } : {}),
+    ...(opts.emissive != null
+      ? { emissive: opts.emissive, emissiveIntensity: opts.emissiveIntensity ?? 0.1 }
+      : {}),
   });
+  matCache.set(key, mat);
   return mat;
 }
 
@@ -293,15 +364,16 @@ const sun = new THREE.DirectionalLight(0xfff1d6, QUALITY === "high" ? 3.1 : 2.4)
 sun.position.set(-28, 48, 18);
 sun.castShadow = true;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
-sun.shadow.camera.near = 4;
-sun.shadow.camera.far = 120;
-sun.shadow.camera.left = -36;
-sun.shadow.camera.right = 36;
-sun.shadow.camera.top = 36;
-sun.shadow.camera.bottom = -36;
-sun.shadow.bias = -0.00035;
-sun.shadow.normalBias = 0.03;
-sun.shadow.radius = SHADOW_SOFT ? 2.5 : 0;
+// Tight ortho around the car — only the Roadster casts; cheaper updates
+sun.shadow.camera.near = 2;
+sun.shadow.camera.far = 60;
+sun.shadow.camera.left = -14;
+sun.shadow.camera.right = 14;
+sun.shadow.camera.top = 14;
+sun.shadow.camera.bottom = -14;
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.04;
+sun.shadow.radius = 0;
 scene.add(sun);
 scene.add(sun.target);
 
@@ -361,6 +433,34 @@ function makeSkyFallback() {
   return skyDome;
 }
 
+/** Downsample an equirect DataTexture so PMREM samples a cheaper source. */
+function downsizeEquirect(tex, maxW) {
+  const img = tex.image;
+  if (!img?.data || !img.width || img.width <= maxW) return tex;
+  const sw = img.width;
+  const sh = img.height;
+  const dw = maxW;
+  const dh = Math.max(32, Math.round((sh * maxW) / sw));
+  const src = img.data;
+  const bpp = src.length / (sw * sh);
+  const Ctor = src.constructor;
+  const dst = new Ctor(dw * dh * bpp);
+  const xRatio = sw / dw;
+  const yRatio = sh / dh;
+  for (let y = 0; y < dh; y++) {
+    const sy = Math.min(sh - 1, (y * yRatio) | 0);
+    for (let x = 0; x < dw; x++) {
+      const sx = Math.min(sw - 1, (x * xRatio) | 0);
+      const si = (sy * sw + sx) * bpp;
+      const di = (y * dw + x) * bpp;
+      for (let c = 0; c < bpp; c++) dst[di + c] = src[si + c];
+    }
+  }
+  tex.image = { data: dst, width: dw, height: dh };
+  tex.needsUpdate = true;
+  return tex;
+}
+
 async function loadEnvironment() {
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
@@ -373,18 +473,19 @@ async function loadEnvironment() {
         reject
       );
     });
+    // 512×256 equirect → PMREM 256 cube; plenty for paint, far cheaper upload
+    downsizeEquirect(hdr, QUALITY === "low" || isMobile ? 256 : 512);
     hdr.mapping = THREE.EquirectangularReflectionMapping;
     const envRT = pmrem.fromEquirectangular(hdr);
     scene.environment = envRT.texture;
     scene.background = envRT.texture;
-    scene.backgroundBlurriness = 0.02;
-    scene.backgroundIntensity = 1.05;
-    scene.environmentIntensity = 1.25;
-    // Cool haze — keep HDRI sky readable, not a white wash
+    scene.backgroundBlurriness = QUALITY === "low" ? 0.1 : 0.05;
+    scene.backgroundIntensity = 1.0;
+    scene.environmentIntensity = QUALITY === "low" ? 0.95 : 1.1;
     scene.fog = new THREE.Fog(
       0x8fa8bc,
-      QUALITY === "low" ? 70 : 95,
-      QUALITY === "low" ? 220 : 300
+      QUALITY === "low" ? 55 : 80,
+      QUALITY === "low" ? 190 : 250
     );
     hdr.dispose();
     pmrem.dispose();
@@ -398,18 +499,17 @@ async function loadEnvironment() {
     console.warn("HDRI load failed, using procedural sky", err);
     pmrem.dispose();
     makeSkyFallback();
-    // Soft canvas env for reflections
     const c = document.createElement("canvas");
-    c.width = 512;
-    c.height = 256;
+    c.width = 256;
+    c.height = 128;
     const ctx = c.getContext("2d");
-    const g = ctx.createLinearGradient(0, 0, 0, 256);
+    const g = ctx.createLinearGradient(0, 0, 0, 128);
     g.addColorStop(0, "#0b3d78");
     g.addColorStop(0.45, "#7ebfe8");
     g.addColorStop(0.55, "#dceef8");
     g.addColorStop(1, "#8a9288");
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 512, 256);
+    ctx.fillRect(0, 0, 256, 128);
     const equirect = new THREE.CanvasTexture(c);
     equirect.colorSpace = THREE.SRGBColorSpace;
     equirect.mapping = THREE.EquirectangularReflectionMapping;
@@ -420,26 +520,10 @@ async function loadEnvironment() {
   }
 }
 
-/* ── Post-processing (high quality only) ──────────────────── */
-let composer = null;
-let bloomPass = null;
-
+/* ── Post-processing disabled: bloom was a major fill-rate cost on mobile ─ */
 function setupComposer() {
-  if (QUALITY !== "high") {
-    composer = null;
-    bloomPass = null;
-    return;
-  }
-  composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
-  bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.28,
-    0.4,
-    0.9
-  );
-  composer.addPass(bloomPass);
-  composer.addPass(new OutputPass());
+  composer = null;
+  bloomPass = null;
 }
 
 setupComposer();
@@ -1123,7 +1207,7 @@ const particles = [];
 function makeBuilding(w, h, d, color) {
   const g = new THREE.Group();
   const cutawayMats = [];
-  // Mix facade glass towers, brick masonry, and concrete panel mid-rises
+  // Mix facade / brick / panel — cheap mats (no transmission windows)
   const roll = Math.random();
   const useBrick = h < 10 && roll > 0.55;
   const usePanel = !useBrick && h < 16 && roll > 0.28;
@@ -1137,73 +1221,44 @@ function makeBuilding(w, h, d, color) {
   const ry = Math.max(2, Math.round(h / 3.0));
   const bodyMat = pbrFrom(src, rx, ry, {
     color: tint,
-    normalScale: new THREE.Vector2(useBrick ? 1.15 : usePanel ? 1.0 : 0.55, useBrick ? 1.15 : usePanel ? 1.0 : 0.55),
-    roughness: useBrick ? 0.84 : usePanel ? 0.72 : 0.28,
-    metalness: useBrick ? 0.06 : usePanel ? 0.12 : 0.62,
-    envMapIntensity: useBrick ? 0.35 : usePanel ? 0.55 : 1.25,
+    roughness: useBrick ? 0.84 : usePanel ? 0.72 : 0.35,
+    metalness: useBrick ? 0.06 : usePanel ? 0.12 : 0.55,
+    envMapIntensity: useBrick ? 0.3 : usePanel ? 0.45 : 0.9,
+    cheap: true, // skip normal/rough maps on city massing
   });
   cutawayMats.push(bodyMat);
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat);
   mesh.position.y = h / 2;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
   g.add(mesh);
 
-  const winMat = new THREE.MeshPhysicalMaterial({
-    color: 0xc8e8ff,
-    emissive: 0x5a90b8,
-    emissiveIntensity: 0.45 + Math.random() * 0.55,
-    roughness: 0.06,
-    metalness: 0.05,
-    transmission: QUALITY === "high" ? 0.55 : 0,
-    thickness: 0.35,
-    ior: 1.45,
-    transparent: true,
-    opacity: QUALITY === "high" ? 0.55 : 0.72,
-    envMapIntensity: 1.85,
-  });
-  cutawayMats.push(winMat);
-  const rows = Math.max(2, Math.floor(h / 1.35));
-  const cols = Math.max(2, Math.floor(w / 1.0));
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (Math.random() > (useBrick ? 0.48 : usePanel ? 0.38 : 0.22)) continue;
-      const win = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.36 + Math.random() * 0.1, 0.48 + Math.random() * 0.1),
-        winMat
-      );
-      win.position.set(
-        -w / 2 + 0.4 + c * ((w - 0.8) / Math.max(cols - 1, 1)),
-        0.75 + r * (h / rows),
-        d / 2 + 0.02
-      );
-      g.add(win);
-    }
+  // Single emissive ribbon (1 draw) instead of a window grid
+  if (h > 4 && Math.random() > 0.25) {
+    const winMat = new THREE.MeshStandardMaterial({
+      color: 0xa8c8e0,
+      emissive: 0x3a6088,
+      emissiveIntensity: 0.5 + Math.random() * 0.35,
+      roughness: 0.4,
+      metalness: 0.1,
+      envMapIntensity: 0.3,
+    });
+    cutawayMats.push(winMat);
+    const ribbon = new THREE.Mesh(
+      new THREE.PlaneGeometry(Math.max(0.8, w * 0.72), Math.max(0.6, h * 0.55)),
+      winMat
+    );
+    ribbon.position.set(0, h * 0.48, d / 2 + 0.02);
+    ribbon.castShadow = false;
+    g.add(ribbon);
   }
 
-  const sideSrc = useBrick ? maps.brick : maps.concreteWall;
-  const sideMat = pbrFrom(sideSrc, Math.max(1, d / 3), Math.max(2, h / 3), {
-    color: tint.clone().multiplyScalar(0.78),
-    normalScale: new THREE.Vector2(1.05, 1.05),
-    roughness: 0.82,
-    metalness: 0.1,
-    envMapIntensity: 0.4,
-  });
-  cutawayMats.push(sideMat);
-  for (const side of [-1, 1]) {
-    const strip = new THREE.Mesh(new THREE.PlaneGeometry(d * 0.92, h * 0.92), sideMat);
-    strip.position.set(side * (w / 2 + 0.01), h / 2, 0);
-    strip.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
-    g.add(strip);
-  }
-
-  // Cap roof slab + rooftop hut — always mapped (roof / metal / concrete panel)
   const roofSlabMat = pbrFrom(maps.roof, Math.max(1.5, w / 2), Math.max(1.5, d / 2), {
     color: 0xb8bcc4,
-    roughness: 0.7,
-    metalness: 0.35,
-    envMapIntensity: 0.7,
-    normalScale: new THREE.Vector2(0.9, 0.9),
+    roughness: 0.75,
+    metalness: 0.3,
+    envMapIntensity: 0.5,
+    cheap: true,
   });
   cutawayMats.push(roofSlabMat);
   const roofSlab = new THREE.Mesh(
@@ -1211,33 +1266,34 @@ function makeBuilding(w, h, d, color) {
     roofSlabMat
   );
   roofSlab.position.set(0, h + 0.08, 0);
-  roofSlab.castShadow = true;
-  roofSlab.receiveShadow = true;
+  roofSlab.castShadow = false;
+  roofSlab.receiveShadow = false;
   g.add(roofSlab);
 
-  if (h > 5) {
-    const hutSrc = Math.random() > 0.45 ? maps.metal : maps.concretePanel;
-    const roofMat = pbrFrom(hutSrc, 2, 2, {
-      color: hutSrc === maps.metal ? 0x9aa3ad : 0xd0d5dc,
-      metalness: hutSrc === maps.metal ? 0.78 : 0.2,
-      roughness: hutSrc === maps.metal ? 0.35 : 0.7,
-      envMapIntensity: 0.85,
-      normalScale: new THREE.Vector2(1.1, 1.1),
-    });
-    cutawayMats.push(roofMat);
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(w * 0.4, 0.35 + Math.random() * 0.55, d * 0.38),
-      roofMat
-    );
-    roof.position.set((Math.random() - 0.5) * w * 0.25, h + 0.4, (Math.random() - 0.5) * d * 0.2);
-    roof.castShadow = true;
-    g.add(roof);
-  }
   g.userData.isCityBuilding = true;
   g.userData.cutawayMats = cutawayMats;
   g.userData.buildingH = h;
   g.userData.buildingD = d;
   return g;
+}
+
+/** Shared dummy for InstancedMesh placement (avoid per-frame alloc). */
+const _instDummy = new THREE.Object3D();
+
+function addInstancedBoxes(parent, count, geo, mat, placeFn) {
+  if (count <= 0) return null;
+  const mesh = new THREE.InstancedMesh(geo, mat, count);
+  for (let i = 0; i < count; i++) {
+    placeFn(_instDummy, i);
+    _instDummy.updateMatrix();
+    mesh.setMatrixAt(i, _instDummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.frustumCulled = true;
+  parent.add(mesh);
+  return mesh;
 }
 
 
@@ -1263,16 +1319,13 @@ function makeTrain(length = 10) {
     roughness: 0.55,
     metalness: 0.15,
   });
-  const winMat = new THREE.MeshPhysicalMaterial({
+  const winMat = new THREE.MeshStandardMaterial({
     color: 0x8ec8e8,
     emissive: 0x3a7188,
     emissiveIntensity: 0.55,
-    roughness: 0.08,
+    roughness: 0.2,
     metalness: 0.05,
-    transmission: QUALITY === "high" ? 0.35 : 0,
-    transparent: true,
-    opacity: 0.78,
-    envMapIntensity: 1.5,
+    envMapIntensity: 0.8,
   });
 
   for (let i = 0; i < cars; i++) {
@@ -1283,93 +1336,59 @@ function makeTrain(length = 10) {
 
     const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.55, 1.85), bodyMat);
     body.position.set(cx, 0.95, 0);
-    body.castShadow = true;
-    body.receiveShadow = true;
+    body.castShadow = false;
+    body.receiveShadow = false;
     g.add(body);
 
-    // Slightly inset lower skirt
     const skirt = new THREE.Mesh(
       new THREE.BoxGeometry(3.55, 0.35, 1.9),
       pbrFrom(maps.metal, 2, 0.4, {
         color: 0x2c3036,
         metalness: 0.75,
         roughness: 0.4,
+        cheap: true,
       })
     );
     skirt.position.set(cx, 0.32, 0);
-    skirt.castShadow = true;
+    skirt.castShadow = false;
     g.add(skirt);
 
-    // Walkable roof + AC blister
     const roof = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.14, 1.75), roofMat);
     roof.position.set(cx, 1.82, 0);
-    roof.castShadow = true;
+    roof.castShadow = false;
     g.add(roof);
-    const blister = new THREE.Mesh(
-      new THREE.BoxGeometry(1.4, 0.22, 0.7),
-      roofMat
-    );
-    blister.position.set(cx + 0.2, 1.98, 0);
-    blister.castShadow = true;
-    g.add(blister);
 
-    // Belt stripe
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.52, 0.22, 1.88), stripeMat);
     stripe.position.set(cx, 0.72, 0);
     g.add(stripe);
 
-    // Continuous window ribbon + dividers
     for (const side of [-1, 1]) {
       const ribbon = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 0.55), winMat);
       ribbon.position.set(cx, 1.2, side * 0.935);
       ribbon.rotation.y = side > 0 ? 0 : Math.PI;
       g.add(ribbon);
-      for (let w = 0; w < 4; w++) {
-        const mullion = new THREE.Mesh(
-          new THREE.BoxGeometry(0.06, 0.55, 0.04),
-          bodyMat
-        );
-        mullion.position.set(cx - 1.35 + w * 0.9, 1.2, side * 0.94);
-        g.add(mullion);
-      }
-    }
-
-    // Bogie wheels
-    for (const wz of [-0.72, 0.72]) {
-      for (const wx of [-1.15, 1.15]) {
-        const wh = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.28, 0.28, 0.18, 12),
-          matTire
-        );
-        wh.rotation.z = Math.PI / 2;
-        wh.position.set(cx + wx, 0.28, wz);
-        g.add(wh);
-      }
     }
   }
 
-  // Cab nose — rounded metal front
   const noseMat = pbrFrom(maps.metal, 1, 1, {
     color: liveries[0],
     metalness: 0.7,
     roughness: 0.32,
     envMapIntensity: 1.0,
+    cheap: true,
   });
   const nose = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.35, 1.7), noseMat);
   nose.position.set(-0.55, 0.95, 0);
-  nose.castShadow = true;
+  nose.castShadow = false;
   g.add(nose);
-  const windshield = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.7, 0.55),
-    winMat
-  );
+  const windshield = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.55), winMat);
   windshield.position.set(-1.01, 1.15, 0);
   windshield.rotation.y = Math.PI / 2;
   g.add(windshield);
 
   g.userData.length = cars * 4.0;
   g.userData.roofY = 1.88;
-  return g;
+  return sceneryNoCast(g);
 }
 
 function makeBridge(levelY) {
@@ -1431,7 +1450,7 @@ function makeBridge(levelY) {
     hitHalfZ: 1.0,
     hitHalfX: 3.5,
   };
-  return g;
+  return sceneryNoCast(g);
 }
 
 function makeTunnel(levelY) {
@@ -1478,7 +1497,7 @@ function makeTunnel(levelY) {
     hitHalfZ: 4.5,
     hitHalfX: 2.8,
   };
-  return g;
+  return sceneryNoCast(g);
 }
 
 /** Jersey-barrier profile extruded along Z (angled faces). */
@@ -1598,7 +1617,7 @@ function makeBarrier(level, onCeiling = false) {
     onCeiling,
     hitHalfX: 1.2,
   };
-  return g;
+  return sceneryNoCast(g);
 }
 
 /** Deck whose underside is the soffit for inverted driving on `level`. */
@@ -1717,7 +1736,7 @@ function makeHangingSoffitHazard(level, kind = "sign") {
     onCeiling: true,
     hitHalfX: kind === "pipe" ? 1.3 : kind === "duct" ? 1.2 : 1.05,
   };
-  return g;
+  return sceneryNoCast(g);
 }
 
 function makeCeilingSpike(level) {
@@ -1813,7 +1832,7 @@ function createDeckSurface(levelIndex, zCenter) {
     underStripe.castShadow = true;
     g.add(underStripe);
 
-    // Soffit ribs: flat cool concrete (no wood-grain maps)
+    // Soffit ribs + lights as InstancedMesh (few draws, shared mats)
     const soffitY = ly - 0.55 - 0.02;
     const beamMat = new THREE.MeshStandardMaterial({
       color: 0xa8b2bc,
@@ -1822,41 +1841,30 @@ function createDeckSurface(levelIndex, zCenter) {
       envMapIntensity: 0.2,
     });
     cutawayMats.push(beamMat);
-    const nBeams = QUALITY === "low" ? 5 : 7;
-    for (let i = 0; i < nBeams; i++) {
-      const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(0.34, 0.36, width + 0.35),
-        beamMat
-      );
-      beam.position.set(
-        -SEGMENT_LEN / 2 + 2.2 + i * (SEGMENT_LEN / (nBeams + 0.35)),
-        soffitY - 0.2,
-        0
-      );
-      beam.castShadow = true;
-      g.add(beam);
-    }
+    const nBeams = QUALITY === "low" ? 4 : 5;
+    addInstancedBoxes(
+      g,
+      nBeams,
+      new THREE.BoxGeometry(0.34, 0.36, width + 0.35),
+      beamMat,
+      (d, i) => {
+        d.position.set(
+          -SEGMENT_LEN / 2 + 2.2 + i * (SEGMENT_LEN / (nBeams + 0.35)),
+          soffitY - 0.2,
+          0
+        );
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
     for (const z of [-width * 0.22, width * 0.22]) {
       const longRib = new THREE.Mesh(
         new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 0.24, 0.28),
         beamMat
       );
       longRib.position.set(0, soffitY - 0.16, z);
+      longRib.castShadow = false;
       g.add(longRib);
-    }
-
-    const jointMat = new THREE.MeshStandardMaterial({
-      color: 0x3a4048,
-      roughness: 0.9,
-      metalness: 0.05,
-    });
-    for (let i = 1; i < 4; i++) {
-      const joint = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.04, width + 0.5),
-        jointMat
-      );
-      joint.position.set(-SEGMENT_LEN / 2 + i * (SEGMENT_LEN / 4), soffitY - 0.01, 0);
-      g.add(joint);
     }
 
     const lightMat = new THREE.MeshStandardMaterial({
@@ -1866,33 +1874,39 @@ function createDeckSurface(levelIndex, zCenter) {
       roughness: 0.35,
       metalness: 0.2,
     });
-    const fixtureMat = pbrFrom(maps.metal, 0.4, 0.3, {
-      color: 0x5a6068,
-      metalness: 0.75,
-      roughness: 0.35,
-    });
-    cutawayMats.push(fixtureMat);
-    const nLights = QUALITY === "low" ? 3 : 5;
-    for (let i = 0; i < nLights; i++) {
-      const fx = -SEGMENT_LEN / 2 + 4 + i * ((SEGMENT_LEN - 8) / Math.max(nLights - 1, 1));
-      const housing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.1, 0.35), fixtureMat);
-      housing.position.set(fx, soffitY - 0.08, 0);
-      g.add(housing);
-      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.04, 0.22), lightMat);
-      bulb.position.set(fx, soffitY - 0.14, 0);
-      g.add(bulb);
-    }
+    const nLights = QUALITY === "low" ? 2 : 3;
+    addInstancedBoxes(
+      g,
+      nLights,
+      new THREE.BoxGeometry(0.45, 0.08, 0.28),
+      lightMat,
+      (d, i) => {
+        d.position.set(
+          -SEGMENT_LEN / 2 + 4 + i * ((SEGMENT_LEN - 8) / Math.max(nLights - 1, 1)),
+          soffitY - 0.12,
+          0
+        );
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
 
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xa5f3fc,
       emissive: 0x0891b2,
       emissiveIntensity: 0.35,
     });
-    for (let i = 0; i < 5; i++) {
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.04, 0.18), ceilLine);
-      dash.position.set(-SEGMENT_LEN / 2 + 3 + i * 5.5, ly - DECK_THICK - 0.02, 0);
-      g.add(dash);
-    }
+    addInstancedBoxes(
+      g,
+      4,
+      new THREE.BoxGeometry(2.0, 0.04, 0.18),
+      ceilLine,
+      (d, i) => {
+        d.position.set(-SEGMENT_LEN / 2 + 3 + i * 6.5, ly - DECK_THICK - 0.02, 0);
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
   }
 
   if (levelIndex === 2) {
@@ -1914,7 +1928,7 @@ function createDeckSurface(levelIndex, zCenter) {
     canopy.receiveShadow = true;
     g.add(canopy);
 
-    // Canopy soffit ribs + lights (visible when inverted on roof)
+    // Canopy soffit ribs + lights (instanced)
     const canBeamMat = new THREE.MeshStandardMaterial({
       color: 0xaab4be,
       roughness: 0.9,
@@ -1922,36 +1936,51 @@ function createDeckSurface(levelIndex, zCenter) {
       envMapIntensity: 0.2,
     });
     cutawayMats.push(canBeamMat);
-    for (let i = 0; i < 5; i++) {
-      const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(0.24, 0.18, width + 0.8),
-        canBeamMat
-      );
-      beam.position.set(-SEGMENT_LEN / 2 + 3 + i * 5.5, canopyY - 0.28, 0);
-      g.add(beam);
-    }
+    addInstancedBoxes(
+      g,
+      4,
+      new THREE.BoxGeometry(0.24, 0.18, width + 0.8),
+      canBeamMat,
+      (d, i) => {
+        d.position.set(-SEGMENT_LEN / 2 + 3 + i * 7, canopyY - 0.28, 0);
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
     const canLight = new THREE.MeshStandardMaterial({
       color: 0xfff2d0,
       emissive: 0xffd090,
       emissiveIntensity: 0.45,
       roughness: 0.4,
     });
-    for (let i = 0; i < 4; i++) {
-      const bulb = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 0.2), canLight);
-      bulb.position.set(-SEGMENT_LEN / 2 + 5 + i * 6, canopyY - 0.32, 0);
-      g.add(bulb);
-    }
+    addInstancedBoxes(
+      g,
+      3,
+      new THREE.BoxGeometry(0.35, 0.05, 0.2),
+      canLight,
+      (d, i) => {
+        d.position.set(-SEGMENT_LEN / 2 + 5 + i * 8, canopyY - 0.32, 0);
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
 
     const ceilLine = new THREE.MeshStandardMaterial({
       color: 0xfda4af,
       emissive: 0x9f1239,
       emissiveIntensity: 0.3,
     });
-    for (let i = 0; i < 5; i++) {
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.04, 0.18), ceilLine);
-      dash.position.set(-SEGMENT_LEN / 2 + 3 + i * 5.5, ceilingY(2) - 0.02, 0);
-      g.add(dash);
-    }
+    addInstancedBoxes(
+      g,
+      4,
+      new THREE.BoxGeometry(2.0, 0.04, 0.18),
+      ceilLine,
+      (d, i) => {
+        d.position.set(-SEGMENT_LEN / 2 + 3 + i * 6.5, ceilingY(2) - 0.02, 0);
+        d.scale.set(1, 1, 1);
+        d.rotation.set(0, 0, 0);
+      }
+    );
   }
 
   const lineMat =
@@ -1962,11 +1991,17 @@ function createDeckSurface(levelIndex, zCenter) {
           emissiveIntensity: 0.35,
         })
       : matLine;
-  for (let i = 0; i < 5; i++) {
-    const dash = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.05, 0.2), lineMat);
-    dash.position.set(-SEGMENT_LEN / 2 + 3 + i * 5.5, ly + 0.05, 0);
-    g.add(dash);
-  }
+  addInstancedBoxes(
+    g,
+    4,
+    new THREE.BoxGeometry(2.2, 0.05, 0.2),
+    lineMat,
+    (d, i) => {
+      d.position.set(-SEGMENT_LEN / 2 + 3 + i * 6.5, ly + 0.05, 0);
+      d.scale.set(1, 1, 1);
+      d.rotation.set(0, 0, 0);
+    }
+  );
 
   const pillarMat = pbrFrom(maps.concretePanel, 1.2, 3.2, {
     color: 0xd0d6de,
@@ -2022,19 +2057,21 @@ function createDeckSurface(levelIndex, zCenter) {
       sideWall.receiveShadow = true;
       g.add(sideWall);
 
-      for (let p = 0; p < 3; p++) {
-        const pillar = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.35, 0.45, ly - 0.3, 8),
-          pillarMat
-        );
-        pillar.position.set(
-          -SEGMENT_LEN / 2 + 4 + p * 10,
-          (ly - 0.3) / 2,
-          side * (width / 2 - 0.15)
-        );
-        pillar.castShadow = true;
-        g.add(pillar);
-      }
+      addInstancedBoxes(
+        g,
+        3,
+        new THREE.CylinderGeometry(0.35, 0.45, ly - 0.3, 6),
+        pillarMat,
+        (d, p) => {
+          d.position.set(
+            -SEGMENT_LEN / 2 + 4 + p * 10,
+            (ly - 0.3) / 2,
+            side * (width / 2 - 0.15)
+          );
+          d.scale.set(1, 1, 1);
+          d.rotation.set(0, 0, 0);
+        }
+      );
     }
   }
 
@@ -2120,17 +2157,21 @@ function createDeckSurface(levelIndex, zCenter) {
       apron.receiveShadow = true;
       g.add(apron);
 
-      for (let i = 0; i < 3; i++) {
-        const pot = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.32, 0.4), potMat);
-        pot.position.set(
-          -SEGMENT_LEN / 2 + 5 + i * 8,
-          walkTop + 0.16,
-          s * (roadHalf + curbW + walkW / 2)
-        );
-        pot.castShadow = true;
-        pot.receiveShadow = true;
-        g.add(pot);
-      }
+      addInstancedBoxes(
+        g,
+        2,
+        new THREE.BoxGeometry(0.4, 0.32, 0.4),
+        potMat,
+        (d, i) => {
+          d.position.set(
+            -SEGMENT_LEN / 2 + 6 + i * 12,
+            walkTop + 0.16,
+            s * (roadHalf + curbW + walkW / 2)
+          );
+          d.scale.set(1, 1, 1);
+          d.rotation.set(0, 0, 0);
+        }
+      );
 
       // Shop frontage ONLY on the far side (+Z).
       if (s > 0) {
@@ -2140,14 +2181,15 @@ function createDeckSurface(levelIndex, zCenter) {
           roughness: 0.86,
           metalness: 0.04,
           envMapIntensity: 0.22,
+          cheap: true,
         });
         const store = new THREE.Mesh(
           new THREE.BoxGeometry(SEGMENT_LEN * 0.96, 3.2, 0.85),
           storeMat
         );
         store.position.set(0, 1.6, frontZ);
-        store.castShadow = true;
-        store.receiveShadow = true;
+        store.castShadow = false;
+        store.receiveShadow = false;
         g.add(store);
         const winMat = new THREE.MeshStandardMaterial({
           color: 0x1a2838,
@@ -2156,11 +2198,17 @@ function createDeckSurface(levelIndex, zCenter) {
           roughness: 0.3,
           metalness: 0.2,
         });
-        for (let i = 0; i < 4; i++) {
-          const win = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 0.08), winMat);
-          win.position.set(-SEGMENT_LEN / 2 + 4 + i * 6.5, 1.5, frontZ - 0.44);
-          g.add(win);
-        }
+        addInstancedBoxes(
+          g,
+          3,
+          new THREE.BoxGeometry(1.4, 1.1, 0.08),
+          winMat,
+          (d, i) => {
+            d.position.set(-SEGMENT_LEN / 2 + 5 + i * 8, 1.5, frontZ - 0.44);
+            d.scale.set(1, 1, 1);
+            d.rotation.set(0, 0, 0);
+          }
+        );
       } else {
         // Camera side stays open — no reflective grey plaza filling the frame.
         // A recessed matte asphalt pad only, well below street level.
@@ -2185,16 +2233,23 @@ function createDeckSurface(levelIndex, zCenter) {
 
   g.position.set(zCenter, 0, 0);
   g.userData = { levelIndex, zCenter, width, hasGap: false, cutawayMats };
-  return g;
+  return sceneryNoCast(g);
 }
 
 
+/** Static scenery never casts — only the Roadster does (huge shadow-map win). */
+function sceneryNoCast(root) {
+  root.traverse((o) => {
+    if (o.isMesh) o.castShadow = false;
+  });
+  return root;
+}
+
 function createGroundStrip(zCenter) {
   const g = new THREE.Group();
-  // ONLY far fill — never under the side chase-cam foreground or street edge.
-  // Street stack owns |z|≲10; camera sits ~z=−13.5 so cam-side fill stays distant.
+  // Far fill only. Cam-side (−Z) uses the shared leftTerrainFollow instead of
+  // per-segment strips (fewer draws).
   const strips = [
-    { src: maps.asphalt, z: -30, depth: 10, color: 0x6a6e74, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 10 / 1.0 },
     { src: maps.dirt, z: 26, depth: 12, color: 0x6e5e4a, y: -0.5, rx: SEGMENT_LEN / 1.0, ry: 12 / 1.0 },
   ];
   for (const s of strips) {
@@ -2203,7 +2258,7 @@ function createGroundStrip(zCenter) {
       roughness: 0.96,
       metalness: 0.02,
       envMapIntensity: 0.1,
-      normalScale: new THREE.Vector2(0.8, 0.8),
+      cheap: true,
     });
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(SEGMENT_LEN + 0.5, 0.14, s.depth),
@@ -2211,30 +2266,33 @@ function createGroundStrip(zCenter) {
     );
     mesh.position.set(0, s.y, s.z);
     mesh.receiveShadow = true;
+    mesh.castShadow = false;
     g.add(mesh);
   }
 
   g.position.x = zCenter;
   g.userData.isGroundStrip = true;
-  return g;
+  return sceneryNoCast(g);
 }
 
 function createCityBlock(zCenter) {
   const g = new THREE.Group();
-  // Side-chase cam sits on −Z. Never spawn buildings (or any tall props) on the
-  // left/camera side — they sit between the lens and the car and blind the view.
-  // Keep full scenery on the +Z / right side of the track only.
+  // Side-chase cam sits on −Z. Never spawn buildings on the left/camera side.
+  // Keep scenery on the +Z / right side only — fewer, cheaper buildings.
   const FAR_SIDE_MIN = 10;
+  const gapPad = QUALITY === "low" ? 3.6 : 2.4;
   let x = -SEGMENT_LEN / 2 + 2;
-  while (x < SEGMENT_LEN / 2 - 2) {
-    const w = 2.2 + Math.random() * 4.2;
-    const d = 2.2 + Math.random() * 4.0;
+  let placed = 0;
+  const maxNear = QUALITY === "low" ? 4 : 5;
+  while (x < SEGMENT_LEN / 2 - 2 && placed < maxNear) {
+    const w = 2.8 + Math.random() * 3.8;
+    const d = 2.4 + Math.random() * 3.0;
     const h =
-      Math.random() < 0.22
+      Math.random() < 0.35
         ? 3 + Math.random() * 4
-        : Math.random() < 0.55
-          ? 7 + Math.random() * 10
-          : 14 + Math.random() * 16;
+        : Math.random() < 0.7
+          ? 7 + Math.random() * 7
+          : 11 + Math.random() * 10;
     const b = makeBuilding(
       w,
       h,
@@ -2246,52 +2304,149 @@ function createCityBlock(zCenter) {
     b.rotation.y = 0;
     b.userData.cameraSide = false;
     g.add(b);
-    x += w + 1.2 + Math.random() * 2;
+    placed++;
+    x += w + gapPad + Math.random() * 2.5;
   }
-  // Distant backdrop towers — right side only
-  for (let i = 0; i < 7; i++) {
-    const h = 12 + Math.random() * 24;
-    const d = 3 + Math.random() * 5;
+  // Distant backdrop towers — right side only (fewer on low)
+  const towers = QUALITY === "low" ? 3 : 4;
+  for (let i = 0; i < towers; i++) {
+    const h = 10 + Math.random() * 16;
+    const d = 3 + Math.random() * 3.5;
     const b = makeBuilding(
-      3 + Math.random() * 4.5,
+      3 + Math.random() * 4,
       h,
       d,
       BUILDING_PALETTE[(Math.random() * BUILDING_PALETTE.length) | 0]
     );
-    const dist = 22 + Math.random() * 16;
-    b.position.set(-SEGMENT_LEN / 2 + 2 + i * 4, 0, dist);
+    const dist = 24 + Math.random() * 12;
+    b.position.set(-SEGMENT_LEN / 2 + 3 + i * 6, 0, dist);
     b.userData.cameraSide = false;
     g.add(b);
   }
   g.position.x = zCenter;
-  return g;
+  return sceneryNoCast(g);
 }
 
-/** Far scrolling fill only — never enters chase-cam foreground (|z|<18). */
+/**
+ * Far scrolling fill + cheap camera-side (−Z) scenery that NEVER occludes the
+ * side chase cam: a low flat terrain plane and a distant low-poly silhouette
+ * skyline kept below the camera→car sightline.
+ */
 let terrainFollow = null;
+let leftTerrainFollow = null;
+let contactShadow = null;
+
 function ensureTerrainFollow() {
   if (terrainFollow) return terrainFollow;
   const g = new THREE.Group();
-  const slabs = [
-    { src: maps.asphalt, z: -36, w: 110, d: 20, color: 0x5e6268 },
-    { src: maps.dirt, z: 36, w: 110, d: 20, color: 0x5e5040 },
-  ];
-  for (const s of slabs) {
-    const mat = pbrFrom(s.src, s.w / 1.0, s.d / 1.0, {
-      color: s.color,
-      roughness: 0.97,
-      metalness: 0.02,
-      envMapIntensity: 0.08,
-      normalScale: new THREE.Vector2(0.7, 0.7),
-    });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s.w, 0.12, s.d), mat);
-    mesh.position.set(0, -0.65, s.z);
-    mesh.receiveShadow = true;
-    g.add(mesh);
-  }
+  // Right-side far dirt only (cam-side handled by leftTerrainFollow)
+  const mat = pbrFrom(maps.dirt, 40, 8, {
+    color: 0x5e5040,
+    roughness: 0.97,
+    metalness: 0.02,
+    envMapIntensity: 0.08,
+    cheap: true,
+  });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(140, 0.12, 24), mat);
+  mesh.position.set(0, -0.65, 36);
+  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  g.add(mesh);
   scene.add(g);
   terrainFollow = g;
+  ensureLeftCamScenery();
+  ensureContactShadow();
   return g;
+}
+
+/** Low flat ground + distant silhouette on −Z — stays under the side-cam sightline. */
+function ensureLeftCamScenery() {
+  if (leftTerrainFollow) return leftTerrainFollow;
+  const g = new THREE.Group();
+  // Single tiling gravel/dirt plane — one draw call, cheap material
+  const groundMat = pbrFrom(maps.gravel || maps.dirt, 28, 10, {
+    color: 0x6a6860,
+    roughness: 0.98,
+    metalness: 0.02,
+    envMapIntensity: 0.06,
+    cheap: true,
+  });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 70), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(0, -0.55, -28);
+  ground.receiveShadow = false;
+  ground.castShadow = false;
+  g.add(ground);
+
+  // Distant low silhouette (max Y ~2.4) — left of cam, below cam→car sightline
+  const skyMat = new THREE.MeshBasicMaterial({
+    color: 0x4a5560,
+    fog: true,
+  });
+  const skyGeo = new THREE.BoxGeometry(1, 1, 1);
+  const count = 36;
+  const sky = new THREE.InstancedMesh(skyGeo, skyMat, count);
+  sky.castShadow = false;
+  sky.receiveShadow = false;
+  sky.frustumCulled = true;
+  let seed = 7;
+  const rnd = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  for (let i = 0; i < count; i++) {
+    const h = 0.6 + rnd() * 1.8; // readable on horizon, still low
+    const w = 1.4 + rnd() * 3.2;
+    const d = 0.9 + rnd() * 1.8;
+    _instDummy.position.set(
+      -85 + i * 4.8 + rnd() * 1.8,
+      h * 0.5 - 0.4,
+      -34 - rnd() * 12
+    );
+    _instDummy.scale.set(w, h, d);
+    _instDummy.rotation.set(0, 0, 0);
+    _instDummy.updateMatrix();
+    sky.setMatrixAt(i, _instDummy.matrix);
+  }
+  sky.instanceMatrix.needsUpdate = true;
+  g.add(sky);
+
+  scene.add(g);
+  leftTerrainFollow = g;
+  return g;
+}
+
+/** Cheap blob contact shadow under the car (no scenery shadow casters). */
+function ensureContactShadow() {
+  if (contactShadow) return contactShadow;
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(1.35, 16), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.y = 0.03;
+  mesh.renderOrder = 1;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  scene.add(mesh);
+  contactShadow = mesh;
+  return mesh;
+}
+
+function updateContactShadow() {
+  if (!contactShadow) return;
+  const inv = state.inverted || state.flipping;
+  // Stick to the support surface under/above the car
+  const y = inv
+    ? ceilingY(state.level) - 0.04
+    : floorY(state.level) + 0.04;
+  contactShadow.position.set(roadster.position.x - 0.15, y, roadster.position.z);
+  contactShadow.rotation.x = inv ? Math.PI / 2 : -Math.PI / 2;
+  contactShadow.visible = state.running && !state.dead;
+  contactShadow.material.opacity = inv ? 0.18 : 0.3;
 }
 
 /* ── Game state ───────────────────────────────────────────── */
@@ -2332,6 +2487,11 @@ let grounds = [];
 let obstacles = [];
 let trains = [];
 let pickups = [];
+/** Recycled deck / city / ground groups — avoid create+dispose churn. */
+const deckPool = [[], [], []];
+const cityPool = [];
+const groundPool = [];
+const gapMarkerPool = [];
 let nextSegmentX = 0;
 let rngSeed = 1;
 /** columnGapPlan.get(idx) -> boolean[3] — which levels are gapped in that column */
@@ -2455,6 +2615,59 @@ function blocksBothOptions(gaps, haz, level) {
   return !levelHasEscape(gaps, haz, level);
 }
 
+function acquireGapMarker(li, xCenter) {
+  const marker = gapMarkerPool.pop() || new THREE.Group();
+  marker.position.set(xCenter, 0, 0);
+  marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
+  return marker;
+}
+
+function acquireDeck(li, xCenter) {
+  const pooled = deckPool[li].pop();
+  if (pooled) {
+    pooled.position.set(xCenter, 0, 0);
+    pooled.userData.zCenter = xCenter;
+    pooled.userData.hasGap = false;
+    pooled.visible = true;
+    return pooled;
+  }
+  return createDeckSurface(li, xCenter);
+}
+
+function acquireCity(xCenter) {
+  const pooled = cityPool.pop();
+  if (pooled) {
+    pooled.position.x = xCenter;
+    pooled.visible = true;
+    return pooled;
+  }
+  return createCityBlock(xCenter);
+}
+
+function acquireGround(xCenter) {
+  const pooled = groundPool.pop();
+  if (pooled) {
+    pooled.position.x = xCenter;
+    pooled.visible = true;
+    return pooled;
+  }
+  return createGroundStrip(xCenter);
+}
+
+function releaseWorldObject(obj, kind) {
+  worldRoot.remove(obj);
+  if (kind === "gap") {
+    gapMarkerPool.push(obj);
+  } else if (kind === "deck") {
+    const li = obj.userData.levelIndex | 0;
+    if (deckPool[li] && deckPool[li].length < 8) deckPool[li].push(obj);
+  } else if (kind === "city") {
+    if (cityPool.length < 10) cityPool.push(obj);
+  } else if (kind === "ground") {
+    if (groundPool.length < 10) groundPool.push(obj);
+  }
+}
+
 function spawnSegment(xCenter, safe = false) {
   const idx = Math.round(xCenter / SEGMENT_LEN);
   const gaps = planColumnGaps(idx, safe);
@@ -2464,24 +2677,22 @@ function spawnSegment(xCenter, safe = false) {
 
   for (let li = 0; li < LEVELS.length; li++) {
     if (gaps[li]) {
-      const marker = new THREE.Group();
-      marker.position.set(xCenter, 0, 0);
-      marker.userData = { levelIndex: li, zCenter: xCenter, width: 0, hasGap: true };
+      const marker = acquireGapMarker(li, xCenter);
       worldRoot.add(marker);
       segments.push(marker);
     } else {
-      const deck = createDeckSurface(li, xCenter);
+      const deck = acquireDeck(li, xCenter);
       worldRoot.add(deck);
       segments.push(deck);
       anySolid = true;
     }
   }
 
-  const city = createCityBlock(xCenter);
+  const city = acquireCity(xCenter);
   worldRoot.add(city);
   cities.push(city);
 
-  const ground = createGroundStrip(xCenter);
+  const ground = acquireGround(xCenter);
   worldRoot.add(ground);
   grounds.push(ground);
 
@@ -2675,9 +2886,9 @@ function placeHazards(xCenter, opening = false, idx = 0) {
 }
 
 function resetWorld() {
-  for (const s of segments) worldRoot.remove(s);
-  for (const c of cities) worldRoot.remove(c);
-  for (const gr of grounds) worldRoot.remove(gr);
+  for (const s of segments) releaseWorldObject(s, s.userData?.hasGap ? "gap" : "deck");
+  for (const c of cities) releaseWorldObject(c, "city");
+  for (const gr of grounds) releaseWorldObject(gr, "ground");
   for (const o of obstacles) worldRoot.remove(o);
   for (const t of trains) worldRoot.remove(t);
   for (const p of pickups) worldRoot.remove(p);
@@ -2702,22 +2913,30 @@ function resetWorld() {
 
 function pruneWorld(playerX) {
   const minX = playerX - SEGMENT_LEN * (SEGMENTS_BEHIND + 1);
-  const filterKeep = (arr) => {
+  const filterKeep = (arr, kind) => {
     const keep = [];
     for (const obj of arr) {
-      if (obj.position.x < minX - SEGMENT_LEN) worldRoot.remove(obj);
-      else keep.push(obj);
+      if (obj.position.x < minX - SEGMENT_LEN) {
+        if (kind === "deck" || kind === "gap") {
+          releaseWorldObject(obj, obj.userData?.hasGap ? "gap" : "deck");
+        } else if (kind) {
+          releaseWorldObject(obj, kind);
+        } else {
+          worldRoot.remove(obj);
+        }
+      } else keep.push(obj);
     }
     return keep;
   };
-  segments = filterKeep(segments);
-  cities = filterKeep(cities);
-  grounds = filterKeep(grounds);
-  obstacles = filterKeep(obstacles);
-  trains = filterKeep(trains);
-  pickups = filterKeep(pickups);
+  segments = filterKeep(segments, "deck");
+  cities = filterKeep(cities, "city");
+  grounds = filterKeep(grounds, "ground");
+  obstacles = filterKeep(obstacles, null);
+  trains = filterKeep(trains, null);
+  pickups = filterKeep(pickups, null);
 
   if (terrainFollow) terrainFollow.position.x = playerX;
+  if (leftTerrainFollow) leftTerrainFollow.position.x = playerX;
 
   while (nextSegmentX < playerX + SEGMENT_LEN * SEGMENTS_AHEAD) {
     spawnSegment(nextSegmentX);
@@ -3405,12 +3624,8 @@ retryBtn?.addEventListener("click", startGame);
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_CAP));
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer) {
-    composer.setSize(window.innerWidth, window.innerHeight);
-    bloomPass?.setSize(window.innerWidth, window.innerHeight);
-  }
+  _lastPixelRatio = -1;
+  applyPixelRatio();
 });
 
 
@@ -3435,17 +3650,31 @@ function applyQualityFallback() {
   if (qualityFallen || QUALITY === "low") return;
   qualityFallen = true;
   QUALITY = "low";
-  PIXEL_CAP = 1.15;
+  PIXEL_CAP = 1.0;
   SHADOW_SOFT = false;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, PIXEL_CAP));
+  RES_SCALE = Math.min(RES_SCALE, 0.75);
+  applyPixelRatio();
   renderer.shadowMap.type = THREE.BasicShadowMap;
   renderer.shadowMap.needsUpdate = true;
-  sun.shadow.mapSize.set(512, 512);
+  sun.shadow.mapSize.set(256, 256);
   sun.shadow.map?.dispose?.();
   sun.shadow.map = null;
   sun.shadow.radius = 0;
   composer = null;
   bloomPass = null;
+}
+
+/** Drop resolution when frame time is high; ease back when healthy. */
+function updateAdaptiveResolution(dt) {
+  const ms = dt * 1000;
+  let next = RES_SCALE;
+  if (ms > 22) next = Math.max(0.55, RES_SCALE - 0.06);
+  else if (ms > 18) next = Math.max(0.65, RES_SCALE - 0.03);
+  else if (ms < 12 && RES_SCALE < 1) next = Math.min(1, RES_SCALE + 0.025);
+  if (Math.abs(next - RES_SCALE) >= 0.02) {
+    RES_SCALE = next;
+    applyPixelRatio();
+  }
 }
 
 function renderFrame() {
@@ -3465,6 +3694,7 @@ function animate() {
   if (dt > 0) {
     const fps = 1 / dt;
     fpsEMA = fpsEMA * 0.92 + fps * 0.08;
+    if (state.running) updateAdaptiveResolution(dt);
     if (!qualityFallen && state.running && state.time > 2.5 && fpsEMA < 28) {
       applyQualityFallback();
     }
@@ -3481,6 +3711,7 @@ function animate() {
     updateTrains(dt);
     pruneWorld(roadster.position.x);
     updateParticles(dt);
+    updateContactShadow();
     if (!window.__ROADSTER__?.cameraLocked) updateCamera(dt);
     updateHUD();
   } else if (!state.dead && !window.__ROADSTER__?.cameraLocked) {
@@ -3596,14 +3827,14 @@ function exposeAPI() {
             if (s.userData.levelIndex !== li) continue;
             if (Math.abs(s.position.x - xCenter) >= 1) continue;
             if (s.userData.hasGap) {
-              worldRoot.remove(s);
+              releaseWorldObject(s, "gap");
               segments.splice(i, 1);
             } else {
               hasSolid = true;
             }
           }
           if (!hasSolid) {
-            const solid = createDeckSurface(li, xCenter);
+            const solid = acquireDeck(li, xCenter);
             worldRoot.add(solid);
             segments.push(solid);
           }
@@ -3673,6 +3904,48 @@ function exposeAPI() {
       let n = 0;
       for (const o of obstacles) if (o.userData?.onCeiling) n++;
       return n;
+    },
+    /** renderer.info snapshot for perf before/after reports. */
+    getRenderStats() {
+      // Direct render so info.render reflects the full scene (composer under-counts)
+      renderer.info.reset();
+      renderer.render(scene, camera);
+      const mem = renderer.info.memory;
+      const ren = renderer.info.render;
+      // Unique texture *images* only (Texture.clone shares .image)
+      const seen = new Set();
+      let texBytes = 0;
+      const account = (tex) => {
+        if (!tex?.image) return;
+        const img = tex.image;
+        if (seen.has(img)) return;
+        seen.add(img);
+        if (img.width) texBytes += img.width * img.height * 4;
+      };
+      for (const t of mapCloneCache.values()) account(t);
+      for (const key of Object.keys(maps)) {
+        const set = maps[key];
+        if (!set || typeof set !== "object") continue;
+        if (set.isTexture) {
+          account(set);
+          continue;
+        }
+        for (const k of ["diff", "nor", "rough", "ao"]) account(set[k]);
+      }
+      return {
+        calls: ren.calls,
+        triangles: ren.triangles,
+        points: ren.points,
+        lines: ren.lines,
+        geometries: mem.geometries,
+        textures: mem.textures,
+        textureMemoryMB: Math.round((texBytes / (1024 * 1024)) * 10) / 10,
+        pixelRatio: renderer.getPixelRatio(),
+        resScale: RES_SCALE,
+        quality: QUALITY,
+        shadowMap: sun.shadow.mapSize.x,
+        bloom: !!composer,
+      };
     },
     minOverlapDist,
     /** Force-generate columns ahead so the plan can be validated far out. */
