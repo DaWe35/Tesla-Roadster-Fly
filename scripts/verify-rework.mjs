@@ -165,19 +165,22 @@ async function runViewport(w, h, prefix) {
     console.log("shot", file);
   }
 
-  // HUD: no level/surface elements
+  // HUD: no level/surface elements; Flip + Boost are separate controls
   const hudCheck = await page.evaluate(() => ({
     level: !!document.getElementById("hud-level"),
     surface: !!document.getElementById("hud-surface"),
     time: !!document.getElementById("hud-time"),
     best: !!document.getElementById("hud-best"),
     flip: !!document.getElementById("flip-btn"),
+    boost: !!document.getElementById("boost-btn"),
+    meter: !!document.getElementById("boost-meter"),
     labels: [...document.querySelectorAll("#hud .label")].map((el) => el.textContent),
   }));
   console.log(prefix, "hud", hudCheck);
   if (hudCheck.level || hudCheck.surface) throw new Error("level/surface HUD still present");
   if (hudCheck.labels.length) throw new Error("HUD labels remain: " + hudCheck.labels.join(","));
   if (!hudCheck.time || !hudCheck.best || !hudCheck.flip) throw new Error("score/flip missing");
+  if (!hudCheck.boost || !hudCheck.meter) throw new Error("boost button/meter missing");
 
   // Gap + floor/ceiling hazard survivability plan
   const plan = await page.evaluate(() => {
@@ -278,6 +281,108 @@ async function runViewport(w, h, prefix) {
   await shot("05_thrust_inverted_t1");
   await page.evaluate(() => window.__ROADSTER__.simulate(0.35));
   await shot("06_thrust_inverted_t2");
+
+  // Boost: Shift / pressBoost raises speed + FOV; gap plan uses boosted max speed
+  const boostCheck = await page.evaluate(() => {
+    const R = window.__ROADSTER__;
+    R.startGame();
+    R.simulate(0.3, { render: false });
+    const before = R.getState();
+    const plan = R.validateGapPlan();
+    const minOv = R.minOverlapDist();
+    const expectMin = before.maxSpeed * R.BOOST_MULT * (0.12 + 0.22 + 0.45);
+    R.pressBoost(true);
+    R.simulate(0.25);
+    const mid = R.getState();
+    R.pressBoost(false);
+    R.simulate(0.05);
+    const after = R.getState();
+    return {
+      beforeSpeed: before.speed,
+      midSpeed: mid.speed,
+      boosting: mid.boosting,
+      meterDrop: mid.boostMeter < before.boostMeter,
+      fovKick: mid.boostFovKick > 0.2,
+      thrust: mid.thrustVisible,
+      afterBoosting: after.boosting,
+      planOk: plan.ok,
+      minOv,
+      expectMin,
+      fairOk: minOv >= expectMin * 0.98,
+    };
+  });
+  console.log(prefix, "boost", boostCheck);
+  if (!boostCheck.boosting) throw new Error("boost did not engage");
+  if (!(boostCheck.midSpeed > boostCheck.beforeSpeed * 1.2)) {
+    throw new Error("boost speed not increased: " + JSON.stringify(boostCheck));
+  }
+  if (!boostCheck.meterDrop) throw new Error("boost meter did not drain");
+  if (!boostCheck.fovKick) throw new Error("boost FOV kick missing");
+  if (!boostCheck.thrust) throw new Error("boost thrusters not visible");
+  if (!boostCheck.fairOk) {
+    throw new Error(
+      `gap fairness not using boost speed: minOv=${boostCheck.minOv} expect>=${boostCheck.expectMin}`
+    );
+  }
+  await shot("07_boosting");
+
+  // Fall through a gap: silent (no instant death), world-down, can land below
+  const fallCheck = await page.evaluate(() => {
+    const R = window.__ROADSTER__;
+    R.simulating = true;
+    const setup = R.setupFallShot(1, 0);
+    const y0 = R.getState().y;
+    const samples = [];
+    for (let i = 0; i < 45; i++) {
+      R.simulate(1 / 60, { render: false });
+      const st = R.getState();
+      samples.push({ y: st.y, falling: st.falling, dead: st.dead, level: st.level, reason: st.reason });
+      if (!st.falling && !st.dead) break;
+      if (st.dead) break;
+    }
+    R.simulate(1 / 60);
+    const end = R.getState();
+    R.simulating = false;
+    const ys = samples.map((s) => s.y);
+    let fallingDown = false;
+    for (let i = 1; i < ys.length; i++) {
+      if (ys[i] < ys[i - 1] - 0.05) {
+        fallingDown = true;
+        break;
+      }
+    }
+    return {
+      setup,
+      y0,
+      fallingDown,
+      landed: !end.falling && !end.dead && end.level === 0,
+      dead: end.dead,
+      reason: end.reason,
+      endY: end.y,
+      samples: samples.slice(0, 8),
+    };
+  });
+  console.log(prefix, "fall", {
+    fallingDown: fallCheck.fallingDown,
+    landed: fallCheck.landed,
+    dead: fallCheck.dead,
+    reason: fallCheck.reason,
+    y0: fallCheck.y0,
+    endY: fallCheck.endY,
+  });
+  if (!fallCheck.setup?.falling && !fallCheck.fallingDown) {
+    throw new Error("fall did not start: " + JSON.stringify(fallCheck.setup));
+  }
+  if (!fallCheck.fallingDown) throw new Error("fall was not world-down");
+  // Must not instantly game-over on gap entry
+  if (fallCheck.samples[0]?.dead) throw new Error("instant death on gap — should fall silently");
+  if (!(fallCheck.landed || fallCheck.dead)) {
+    throw new Error("fall neither landed nor died: " + JSON.stringify(fallCheck.samples.slice(-3)));
+  }
+  if (fallCheck.dead && !/fell/i.test(fallCheck.reason || "")) {
+    throw new Error("unexpected death reason during fall: " + fallCheck.reason);
+  }
+  await shot("08_fall");
 
   await page.close();
 }

@@ -21,6 +21,14 @@ let CAR_CLEARANCE = 1.05;
 const HOP_DURATION = 0.12; // near-instant level change
 const FLIP_DURATION = 0.22;
 const REACTION_TIME = 0.45; // human reaction budget before a gap
+/** World-down gravity while falling through a gap (units/s²). */
+const FALL_GRAVITY = 32;
+const FALL_DEATH_Y = -7;
+/** Boost is a separate control from Flip (Shift / Boost button). */
+const BOOST_MULT = 1.55;
+const BOOST_DRAIN = 0.9; // meter / sec while boosting
+const BOOST_RECHARGE = 0.32; // meter / sec when idle
+const BOOST_MIN_START = 0.18;
 const SEGMENT_LEN = 28;
 /** Half the prior draw distance — fewer segments + tighter fog/far plane. */
 const SEGMENTS_AHEAD = 5;
@@ -45,6 +53,8 @@ const gameoverScreen = document.getElementById("gameover-screen");
 const startBtn = document.getElementById("start-btn");
 const retryBtn = document.getElementById("retry-btn");
 const flipBtn = document.getElementById("flip-btn");
+const boostBtn = document.getElementById("boost-btn");
+const boostMeterFill = document.getElementById("boost-meter-fill");
 const hudTime = document.getElementById("hud-time");
 const hudBest = document.getElementById("hud-best");
 const startBest = document.getElementById("start-best");
@@ -2420,13 +2430,19 @@ const state = {
   flipToY: 0,
   flipFromRoll: 0,
   flipToRoll: 0,
+  falling: false,
+  vy: 0,
+  fallPitch: 0,
   wheelSpin: 0,
   suspension: 0,
   reason: "",
   invuln: 1.5,
+  boosting: false,
+  boostMeter: 1,
+  boostFovKick: 0,
 };
 
-const input = { up: false, down: false, flip: false };
+const input = { up: false, down: false, flip: false, boostHeld: false };
 
 let segments = [];
 let cities = [];
@@ -2462,10 +2478,17 @@ function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
 
-/** Distance a player needs to react + hop/flip before a gap, at near-max speed. */
+/**
+ * Distance a player needs to react + hop/flip before a gap.
+ * Always uses max cruise × boost so gap spacing stays fair while boosting.
+ */
 function minOverlapDist() {
-  const spd = state.maxSpeed;
+  const spd = state.maxSpeed * BOOST_MULT;
   return spd * (HOP_DURATION + FLIP_DURATION + REACTION_TIME);
+}
+
+function effectiveMaxSpeed() {
+  return state.maxSpeed * BOOST_MULT;
 }
 
 function minGapSpacingCols() {
@@ -2891,7 +2914,7 @@ function pruneWorld(playerX) {
 }
 
 function beginHop(dir) {
-  if (state.hopping || state.flipping || !state.running) return false;
+  if (state.hopping || state.flipping || state.falling || !state.running) return false;
   const target = state.level + dir;
   if (target < 0 || target >= LEVELS.length) return false;
   const x = roadster.position.x;
@@ -2912,7 +2935,7 @@ function beginHop(dir) {
 }
 
 function beginFlip() {
-  if (state.hopping || state.flipping || !state.running) return false;
+  if (state.hopping || state.flipping || state.falling || !state.running) return false;
   const nextInv = !state.inverted;
   // Must have ceiling to flip to, or floor to flip back onto
   if (nextInv && !hasCeilingAt(state.level, roadster.position.x)) return false;
@@ -2929,21 +2952,117 @@ function beginFlip() {
   return true;
 }
 
+/**
+ * Leave the road/ceiling without a crash sound — fall world-down under gravity.
+ * Can land upright on a lower deck; dying only if we pass below the world.
+ */
+function beginFall() {
+  if (state.falling || state.dead || !state.running) return;
+  state.falling = true;
+  state.hopping = false;
+  state.flipping = false;
+  state.boosting = false;
+  // Always world-down, even if we were stuck to a ceiling
+  state.vy = state.inverted ? -1.5 : -0.5;
+  state.fallPitch = state.inverted ? 0.35 : 0.12;
+  state.inverted = false; // no longer magnetized; tumble toward upright
+}
+
+function tryLandFromFall() {
+  const x = roadster.position.x;
+  // Highest deck first so we catch intermediate floors
+  for (let li = LEVELS.length - 1; li >= 0; li--) {
+    if (!hasDeckAt(li, x)) continue;
+    const fy = floorY(li);
+    // Crossing the deck top from above
+    if (state.y <= fy + 0.45 && state.y >= fy - 0.55 && state.vy <= 2) {
+      state.falling = false;
+      state.vy = 0;
+      state.level = li;
+      state.inverted = false;
+      state.roll = 0;
+      state.fallPitch = 0;
+      state.y = fy;
+      roadster.position.y = fy;
+      state.suspension = -0.14;
+      burstThrusters(0.35, 0.18);
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateFall(dt) {
+  state.vy -= FALL_GRAVITY * dt;
+  state.y += state.vy * dt;
+  roadster.position.y = state.y;
+
+  // Smooth tumble toward upright (roll → 0) + slight pitch
+  const tumble = 4.2;
+  if (state.roll > 0.02) state.roll = Math.max(0, state.roll - tumble * dt);
+  else if (state.roll < -0.02) state.roll = Math.min(0, state.roll + tumble * dt);
+  else state.roll = 0;
+  state.fallPitch = THREE.MathUtils.lerp(
+    state.fallPitch,
+    Math.min(0.55, Math.abs(state.vy) * 0.02),
+    1 - Math.pow(0.05, dt)
+  );
+
+  if (state.vy <= 0 && tryLandFromFall()) return;
+
+  if (state.y < FALL_DEATH_Y) {
+    // Silent game-over — no crash/fall/warning sound for gap falls
+    die("Fell off the track", { silent: true });
+  }
+}
+
+function updateBoost(dt) {
+  const canBoost =
+    state.running &&
+    !state.dead &&
+    !state.falling &&
+    !state.hopping &&
+    !state.flipping;
+  const want = canBoost && input.boostHeld && state.boostMeter >= BOOST_MIN_START;
+  if (want || (state.boosting && input.boostHeld && state.boostMeter > 0)) {
+    state.boosting = true;
+    state.boostMeter = Math.max(0, state.boostMeter - BOOST_DRAIN * dt);
+    if (state.boostMeter <= 0.001) {
+      state.boosting = false;
+      state.boostMeter = 0;
+    }
+  } else {
+    state.boosting = false;
+    state.boostMeter = Math.min(1, state.boostMeter + BOOST_RECHARGE * dt);
+  }
+  state.boostFovKick = THREE.MathUtils.lerp(
+    state.boostFovKick,
+    state.boosting ? 1 : 0,
+    1 - Math.pow(state.boosting ? 0.0008 : 0.02, dt)
+  );
+  if (state.boosting) burstThrusters(1.15, 0.12);
+}
 
 function updatePlayer(dt) {
   const ud = roadster.userData;
 
-  state.speed = Math.min(state.maxSpeed, state.baseSpeed + state.time * 0.15);
+  updateBoost(dt);
+  const cruise = Math.min(state.maxSpeed, state.baseSpeed + state.time * 0.15);
+  state.speed = cruise * (state.boosting ? BOOST_MULT : 1);
   roadster.position.x += state.speed * dt;
 
-  if (input.up) beginHop(1);
-  if (input.down) beginHop(-1);
-  if (input.flip) beginFlip();
+  if (!state.falling) {
+    if (input.up) beginHop(1);
+    if (input.down) beginHop(-1);
+    if (input.flip) beginFlip();
+  }
   input.up = false;
   input.down = false;
   input.flip = false;
 
-  if (state.hopping) {
+  if (state.falling) {
+    updateFall(dt);
+  } else if (state.hopping) {
     state.hopT += dt / HOP_DURATION;
     const t = Math.min(1, state.hopT);
     const e = easeOutCubic(t);
@@ -2953,12 +3072,7 @@ function updatePlayer(dt) {
       state.y = state.hopToY;
       state.suspension = state.inverted ? 0.08 : -0.08;
       if (!hasSupport(state.level, roadster.position.x)) {
-        die(
-          state.inverted
-            ? "No ceiling above — hop to another level!"
-            : "Fell through a gap — flip or hop!"
-        );
-        return;
+        beginFall(); // silent fall — no crash sound
       }
     }
     roadster.position.y = state.y;
@@ -2975,49 +3089,38 @@ function updatePlayer(dt) {
       state.roll = state.flipToRoll;
       state.suspension = state.inverted ? 0.08 : -0.08;
       if (!hasSupport(state.level, roadster.position.x)) {
-        die(
-          state.inverted
-            ? "Nothing to stick to — hop to solid road!"
-            : "Fell through a gap — flip to the ceiling!"
-        );
-        return;
+        beginFall();
       }
     }
   } else {
     state.y = surfaceY(state.level, state.inverted);
     roadster.position.y = state.y;
     if (!hasSupport(state.level, roadster.position.x)) {
-      die(
-        state.inverted
-          ? "Ceiling ended — hop or flip to the floor!"
-          : "Fell through a gap — press Flip or hop levels!"
-      );
-      return;
+      beginFall();
     }
   }
 
   state.suspension = THREE.MathUtils.lerp(state.suspension, 0, 1 - Math.pow(0.01, dt));
   roadster.position.z = 0;
   ud.body.rotation.x = state.roll;
+  ud.body.rotation.z = state.falling ? -state.fallPitch : 0;
   ud.body.position.y = state.suspension;
 
   state.wheelSpin += (state.speed / 0.36) * dt;
   for (const w of ud.wheels) {
-    // Positive X rotation = top of wheel moves toward −X / rear when car faces +X
-    // Axle is along local Z after glTF Y-up conversion from Blender
     w.spinner.rotation.z = state.wheelSpin;
     w.hub.position.y = w.baseY + state.suspension * 0.35;
   }
 
   updateThrusters(dt);
+  updateSpeedLines(dt);
   updateDeckCutaway();
   updateBuildingCutaway();
   updatePlayHint(dt);
 
   if (state.invuln > 0) state.invuln -= dt;
-  else checkCollisions();
+  else if (!state.falling) checkCollisions();
 }
-
 
 function checkCollisions() {
   const px = roadster.position.x;
@@ -3153,9 +3256,10 @@ function updateThrusters(dt) {
   if (ud.thrustHold > 0) ud.thrustHold -= dt;
 
   let target = 0;
-  if (state.hopping || state.flipping) target = 1;
+  if (state.boosting) target = 1.2;
+  else if (state.hopping || state.flipping) target = 1;
   else if (ud.thrustHold > 0) target = 0.95;
-  else if (state.inverted && state.running && !state.dead) target = 0.75;
+  else if (state.inverted && state.running && !state.dead && !state.falling) target = 0.75;
 
   if (target >= (ud.thrustLevel || 0)) {
     ud.thrustLevel = THREE.MathUtils.lerp(ud.thrustLevel || 0, target, 1 - Math.pow(0.002, dt));
@@ -3164,7 +3268,8 @@ function updateThrusters(dt) {
   }
   const lvl = ud.thrustLevel || 0;
   const active = lvl > 0.04;
-  const flicker = 0.85 + 0.15 * Math.sin(state.time * 48 + lvl * 7);
+  const boostAmt = state.boosting ? 1 : 0;
+  const flicker = 0.85 + 0.15 * Math.sin(state.time * (48 + boostAmt * 30) + lvl * 7);
 
   const { body, _q, _belly, _side, _fwd, _origin } = ud;
   body.updateWorldMatrix(true, false);
@@ -3173,30 +3278,36 @@ function updateThrusters(dt) {
   _side.set(0, 0, 1).applyQuaternion(_q);
   _fwd.set(1, 0, 0).applyQuaternion(_q);
 
+  // Aim jets: belly for hop/flip/ceiling; rear-ward when boosting
+  const jetAimZ = boostAmt * -0.95; // rotate nozzle toward -X (rear)
+
   // White-blue tip glow + soft lights (cold-gas, not orange flame)
   for (let i = 0; i < ud.jetLights.length; i++) {
     const light = ud.jetLights[i];
-    light.intensity = active ? (0.18 + lvl * 0.35) * flicker : 0;
-    light.distance = 1.2 + lvl * 0.5;
-    light.color.setHex(0x9ad4ff);
+    light.intensity = active ? (0.18 + lvl * 0.45 + boostAmt * 0.55) * flicker : 0;
+    light.distance = 1.2 + lvl * 0.5 + boostAmt * 1.2;
+    light.color.setHex(boostAmt ? 0xc8f0ff : 0x9ad4ff);
+    const nz = ud.nozzles?.[i];
+    if (nz) nz.rotation.z = jetAimZ;
     const tip = ud.tipGlows?.[i];
     if (tip?.material) {
       tip.material.emissive.setHex(active ? 0x7ec8ff : 0x000000);
-      tip.material.emissiveIntensity = active ? 0.45 + lvl * 0.7 : 0;
+      tip.material.emissiveIntensity = active ? 0.45 + lvl * 0.7 + boostAmt * 0.6 : 0;
       tip.material.color.setHex(active ? 0xa8d8f0 : 0x2a2e34);
     }
 
     const core = ud.jetCores?.[i];
     const halo = ud.jetHalos?.[i];
+    const lenScale = 0.92 + lvl * 0.12 + boostAmt * 1.35;
     if (core) {
       core.visible = active;
-      core.material.opacity = active ? (0.55 + lvl * 0.25) * flicker : 0;
-      core.scale.set(1, 0.92 + lvl * 0.12, 1);
+      core.material.opacity = active ? (0.55 + lvl * 0.3 + boostAmt * 0.25) * flicker : 0;
+      core.scale.set(1 + boostAmt * 0.15, lenScale, 1 + boostAmt * 0.15);
     }
     if (halo) {
       halo.visible = active;
-      halo.material.opacity = active ? (0.22 + lvl * 0.12) * flicker : 0;
-      halo.scale.set(1, 0.92 + lvl * 0.1, 1);
+      halo.material.opacity = active ? (0.22 + lvl * 0.14 + boostAmt * 0.18) * flicker : 0;
+      halo.scale.set(1 + boostAmt * 0.2, lenScale * 0.95, 1 + boostAmt * 0.2);
     }
     const diamonds = ud.jetDiamonds?.[i];
     if (diamonds) {
@@ -3204,7 +3315,11 @@ function updateThrusters(dt) {
         const bead = diamonds[d];
         const pulse = 0.55 + 0.45 * Math.sin(state.time * (38 + d * 9) + i + d);
         bead.visible = active;
-        bead.material.opacity = active ? (0.35 - d * 0.05) * lvl * pulse : 0;
+        bead.material.opacity = active
+          ? (0.35 - d * 0.05 + boostAmt * 0.2) * Math.min(1, lvl) * pulse
+          : 0;
+        if (boostAmt) bead.position.y = -0.2 - d * (0.09 + 0.06);
+        else bead.position.y = -0.2 - d * 0.09;
       }
     }
   }
@@ -3359,12 +3474,63 @@ function updateBuildingCutaway() {
   }
 }
 
+/* ── Cheap boost speed-lines (few thin streaks near cam) ───── */
+let speedLineRoot = null;
+function ensureSpeedLines() {
+  if (speedLineRoot) return speedLineRoot;
+  const g = new THREE.Group();
+  const geo = new THREE.BoxGeometry(2.8, 0.012, 0.012);
+  for (let i = 0; i < 8; i++) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xd8eef8,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.userData.phase = i * 1.7;
+    g.add(m);
+  }
+  scene.add(g);
+  speedLineRoot = g;
+  return g;
+}
+
+function updateSpeedLines(dt) {
+  const root = ensureSpeedLines();
+  const on = state.boosting && state.running && !state.dead;
+  const kids = root.children;
+  for (let i = 0; i < kids.length; i++) {
+    const m = kids[i];
+    const targetOp = on ? 0.12 + (i % 3) * 0.06 : 0;
+    m.material.opacity = THREE.MathUtils.lerp(
+      m.material.opacity,
+      targetOp,
+      1 - Math.pow(0.01, dt)
+    );
+    if (m.material.opacity < 0.01) {
+      m.visible = false;
+      continue;
+    }
+    m.visible = true;
+    const t = (state.time * (38 + i * 3) + m.userData.phase) % 14;
+    m.position.set(
+      camera.position.x + 1.5 + t,
+      camera.position.y + ((i % 4) - 1.5) * 0.55 + Math.sin(state.time * 2 + i) * 0.15,
+      camera.position.z + 0.6 + (i % 3) * 0.85
+    );
+  }
+}
+
 function updateCamera(dt) {
   // Side-offset chase (pre–Subway-Surfers framing): camera left of the car so
   // stacked decks / upper levels stay readable upright and inverted.
   const portrait = camera.aspect < 0.9;
   const baseFov = portrait ? 52 : 48;
-  const speedFov = baseFov + (state.speed - state.baseSpeed) * 0.55;
+  const speedFov =
+    baseFov +
+    (state.speed - state.baseSpeed) * 0.45 +
+    state.boostFovKick * (portrait ? 7 : 6);
   camera.fov = THREE.MathUtils.lerp(camera.fov, speedFov, 1 - Math.pow(0.05, dt));
   camera.updateProjectionMatrix();
 
@@ -3372,7 +3538,7 @@ function updateCamera(dt) {
   // Left of the car (historical side chase) but tight enough that decks fill the frame
   // instead of the cam-side apron/ground strip.
   const sideZ = portrait ? -15.5 : -11.8;
-  const inv = state.inverted || state.flipping;
+  const inv = (state.inverted || state.flipping) && !state.falling;
   const desiredY = inv
     ? state.y - (portrait ? 1.55 : 1.25)
     : state.y + (portrait ? 2.55 : 2.25);
@@ -3424,13 +3590,27 @@ function updateHUD() {
   if (hudTime) hudTime.textContent = state.time.toFixed(1) + "s";
   if (hudBest) hudBest.textContent = "Best " + bestTime.toFixed(1) + "s";
   flipBtn?.classList.toggle("active", state.inverted || state.flipping);
+  boostBtn?.classList.toggle("active", state.boosting);
+  if (boostMeterFill) {
+    boostMeterFill.style.transform = `scaleX(${state.boostMeter.toFixed(3)})`;
+    boostMeterFill.classList.toggle("empty", state.boostMeter < BOOST_MIN_START);
+  }
 }
 
-function die(reason) {
+/** Optional crash cue for obstacle hits only — gap falls stay silent. */
+function playCrashSound() {
+  // No audio assets / AudioContext — intentional no-op so obstacle deaths
+  // can opt in later without ever beeping on gap falls.
+}
+
+function die(reason, opts = {}) {
   if (state.dead) return;
   state.dead = true;
   state.running = false;
   state.reason = reason;
+  state.boosting = false;
+  state.falling = false;
+  if (!opts.silent) playCrashSound();
   if (state.time > bestTime) {
     bestTime = state.time;
     try {
@@ -3472,14 +3652,22 @@ function startGame() {
       hopT: 0,
       flipping: false,
       flipT: 0,
+      falling: false,
+      vy: 0,
+      fallPitch: 0,
       wheelSpin: 0,
       suspension: 0,
       reason: "",
       invuln: 0.85,
+      boosting: false,
+      boostMeter: 1,
+      boostFovKick: 0,
     });
+    input.boostHeld = false;
 
     roadster.position.set(0, 0, 0);
     roadster.userData.body.rotation.set(0, 0, 0);
+    for (const nz of roadster.userData.nozzles || []) nz.rotation.z = 0;
     roadster.userData.thrustLevel = 0;
     roadster.userData.thrustHold = 0;
     for (const w of roadster.userData.wheels) {
@@ -3505,8 +3693,8 @@ function startGame() {
         navigator.maxTouchPoints > 0;
       showPlayHint(
         touch
-          ? "Tap Flip to drive on the ceiling. Gaps? Flip or hop levels."
-          : "Space / Flip: stick to the ceiling. Cross gaps upside down or hop levels.",
+          ? "Flip = ceiling. Boost = speed surge. Miss a gap? You fall — land below if you can."
+          : "Space = Flip · Shift = Boost. Drive off a gap and you'll fall (no crash beep).",
         4.5
       );
     }
@@ -3523,10 +3711,14 @@ function startGame() {
 
 /* ── Input ────────────────────────────────────────────────── */
 window.addEventListener("keydown", (e) => {
-  // Space = flip (not hop). ArrowUp / W = hop up.
+  // Space = flip (not hop). Shift = boost (held). ArrowUp / W = hop up.
   if (e.code === "Space") {
     e.preventDefault();
     if (state.running) input.flip = true;
+  }
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
+    e.preventDefault();
+    if (state.running) input.boostHeld = true;
   }
   if (e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
@@ -3535,6 +3727,11 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "ArrowDown" || e.code === "KeyS") {
     e.preventDefault();
     if (state.running) input.down = true;
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
+    input.boostHeld = false;
   }
 });
 
@@ -3552,7 +3749,14 @@ swipeRoot.addEventListener(
   (e) => {
     const t = e.changedTouches[0];
     if (!t || !state.running) return;
-    if (e.target && (e.target.id === "flip-btn")) return;
+    if (
+      e.target &&
+      (e.target.id === "flip-btn" ||
+        e.target.id === "boost-btn" ||
+        e.target.closest?.("#flip-btn, #boost-btn"))
+    ) {
+      return;
+    }
     const dy = t.clientY - touchStartY;
     if (dy < -40) input.up = true;
     else if (dy > 40) input.down = true;
@@ -3564,6 +3768,20 @@ flipBtn?.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   if (state.running) input.flip = true;
 });
+
+function setBoostHeld(on) {
+  input.boostHeld = !!on && state.running;
+}
+boostBtn?.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  setBoostHeld(true);
+});
+boostBtn?.addEventListener("pointerup", (e) => {
+  e.preventDefault();
+  setBoostHeld(false);
+});
+boostBtn?.addEventListener("pointercancel", () => setBoostHeld(false));
+boostBtn?.addEventListener("pointerleave", () => setBoostHeld(false));
 
 startBtn?.addEventListener("click", startGame);
 retryBtn?.addEventListener("click", startGame);
@@ -3719,6 +3937,7 @@ function exposeAPI() {
       speed: state.speed,
       baseSpeed: state.baseSpeed,
       maxSpeed: state.maxSpeed,
+      effectiveMaxSpeed: effectiveMaxSpeed(),
       level: state.level,
       inverted: state.inverted,
       y: state.y,
@@ -3726,6 +3945,11 @@ function exposeAPI() {
       roll: state.roll,
       hopping: state.hopping,
       flipping: state.flipping,
+      falling: state.falling,
+      vy: state.vy,
+      boosting: state.boosting,
+      boostMeter: state.boostMeter,
+      boostFovKick: state.boostFovKick,
       reason: state.reason,
       invuln: state.invuln,
       bestTime,
@@ -3735,6 +3959,7 @@ function exposeAPI() {
       camY: camera.position.y,
       camX: camera.position.x,
       camZ: camera.position.z,
+      camFov: camera.fov,
     }),
     /**
      * Place the car near a soffit ceiling hazard for screenshots / checks.
@@ -3835,6 +4060,9 @@ function exposeAPI() {
     pressFlip: () => {
       input.flip = true;
     },
+    pressBoost: (held = true) => {
+      input.boostHeld = !!held;
+    },
     pressJump: () => {
       input.up = true;
     },
@@ -3844,6 +4072,61 @@ function exposeAPI() {
     /** Visual-only thruster pulse for screenshots / verify. */
     pulseThrusters(hold = 0.9) {
       burstThrusters(1, hold);
+    },
+    beginFall,
+    /**
+     * Force a gap under the car so it falls (for verify / screenshots).
+     * Leaves a solid lower deck when `landLevel` is set.
+     */
+    setupFallShot(fromLevel = 1, landLevel = 0) {
+      this.startGame();
+      this.extendPlan(20);
+      this.setLevel(fromLevel, false);
+      state.invuln = 120;
+      const x = roadster.position.x;
+      const idx = Math.round(x / SEGMENT_LEN);
+      // Clear decks at fromLevel near the car so we lose support
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const s = segments[i];
+        if (s.userData.levelIndex !== fromLevel) continue;
+        if (Math.abs(s.position.x - x) > SEGMENT_LEN * 0.6) continue;
+        if (!s.userData.hasGap) {
+          releaseWorldObject(s, "deck");
+          segments.splice(i, 1);
+          const marker = acquireGapMarker(fromLevel, s.userData.zCenter ?? s.position.x);
+          worldRoot.add(marker);
+          segments.push(marker);
+        }
+      }
+      const gaps = (columnGapPlan.get(idx) || [false, false, false]).slice();
+      gaps[fromLevel] = true;
+      if (landLevel != null && landLevel >= 0) gaps[landLevel] = false;
+      columnGapPlan.set(idx, gaps);
+      // Ensure land deck exists
+      if (landLevel != null && landLevel >= 0) {
+        let has = false;
+        for (const s of segments) {
+          if (s.userData.levelIndex === landLevel && !s.userData.hasGap) {
+            if (Math.abs(s.position.x - x) < SEGMENT_LEN * 0.6) has = true;
+          }
+        }
+        if (!has) {
+          const solid = acquireDeck(landLevel, idx * SEGMENT_LEN);
+          worldRoot.add(solid);
+          segments.push(solid);
+        }
+      }
+      beginFall();
+      updateBuildingCutaway();
+      renderFrame();
+      return {
+        fromLevel,
+        landLevel,
+        x: roadster.position.x,
+        y: state.y,
+        falling: state.falling,
+        plan: validateGapPlan(),
+      };
     },
     validateGapPlan,
     /** Count soffit (ceiling) hazards currently in the world. */
@@ -3913,14 +4196,20 @@ function exposeAPI() {
       state.roll = state.inverted ? Math.PI : 0;
       state.hopping = false;
       state.flipping = false;
+      state.falling = false;
+      state.vy = 0;
+      state.fallPitch = 0;
       roadster.position.y = state.y;
       roadster.userData.body.rotation.x = state.roll;
+      roadster.userData.body.rotation.z = 0;
       for (const w of roadster.userData.wheels) {
         w.hub.position.y = w.baseY;
       }
       updateDeckCutaway();
       updateBuildingCutaway();
     },
+    BOOST_MULT,
+    effectiveMaxSpeed,
     simulate(seconds, opts = {}) {
       const step = 1 / 60;
       const frames = Math.max(1, Math.floor(seconds / step));

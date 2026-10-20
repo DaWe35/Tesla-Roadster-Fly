@@ -52,7 +52,13 @@
         </div>
       </div>
       <div class="hud-bottom">
-        <button type="button" id="flip-btn" aria-label="Flip to ceiling">Flip</button>
+        <div class="hud-controls">
+          <button type="button" id="boost-btn" aria-label="Boost">Boost</button>
+          <button type="button" id="flip-btn" aria-label="Flip to ceiling">Flip</button>
+        </div>
+        <div id="boost-meter" class="boost-meter" aria-hidden="true">
+          <div id="boost-meter-fill" class="boost-meter-fill"></div>
+        </div>
       </div>
     </div>
 
@@ -70,6 +76,7 @@
           <li><kbd>↑</kbd> / <kbd>W</kbd> / swipe up — move one level up</li>
           <li><kbd>↓</kbd> / <kbd>S</kbd> / swipe down — move one level down</li>
           <li><kbd>Space</kbd> / <strong>Flip</strong> — stick to the ceiling or return to the floor</li>
+          <li><kbd>Shift</kbd> / <strong>Boost</strong> — short speed surge (meter recharges)</li>
         </ul>
         <button type="button" id="start-btn" class="cta" disabled>START RUN</button>
         <p class="best-line">Best: <span id="start-best">0.0s</span></p>

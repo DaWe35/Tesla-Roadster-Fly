@@ -1,7 +1,7 @@
-node_modules/
-package-lock.json
-package.json
-scripts/playtest-output/
-favicon.ico
 .DS_Store
+favicon.ico
 *.log
+node_modules/
+package.json
+package-lock.json
+scripts/playtest-output/
