@@ -95,7 +95,8 @@ let QUALITY =
       : "high";
 // Desktop caps at 1.5; mobile/low ~1.0. Adaptive scale drops further under load.
 let PIXEL_CAP = QUALITY === "low" || isMobile ? 1.0 : 1.5;
-const SHADOW_MAP = QUALITY === "low" ? 256 : 512;
+// Car is the hero — keep a decent shadow map on desktop (perf still OK)
+const SHADOW_MAP = QUALITY === "low" ? 256 : 1024;
 let SHADOW_SOFT = false; // hard shadows — much cheaper, look stays readable
 let RES_SCALE = 1;
 let _lastPixelRatio = -1;
@@ -128,14 +129,14 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 const FOG_COLOR = 0xb8c9d8;
 scene.background = new THREE.Color(FOG_COLOR);
-// Half prior fog/far distance for cheaper fill + earlier cull
-scene.fog = new THREE.Fog(FOG_COLOR, 35, 120);
+// Fog starts beyond boosted reaction distance so hazards stay readable
+scene.fog = new THREE.Fog(FOG_COLOR, 70, 170);
 
 const camera = new THREE.PerspectiveCamera(
   55,
   window.innerWidth / window.innerHeight,
   0.1,
-  140
+  200
 );
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 6, -10);
@@ -481,19 +482,22 @@ async function loadEnvironment() {
         reject
       );
     });
-    // 512×256 equirect → PMREM 256 cube; plenty for paint, far cheaper upload
-    downsizeEquirect(hdr, QUALITY === "low" || isMobile ? 256 : 512);
+    // Keep full 1k HDRI on desktop — car paint needs it (perf pass had
+    // downsized to 512 and dropped env intensity, which dulled the GLB).
+    // Mobile/low still downsizes for fill-rate.
+    if (QUALITY === "low" || isMobile) downsizeEquirect(hdr, 256);
     hdr.mapping = THREE.EquirectangularReflectionMapping;
     const envRT = pmrem.fromEquirectangular(hdr);
     scene.environment = envRT.texture;
     scene.background = envRT.texture;
-    scene.backgroundBlurriness = QUALITY === "low" ? 0.1 : 0.05;
-    scene.backgroundIntensity = 1.0;
-    scene.environmentIntensity = QUALITY === "low" ? 0.95 : 1.1;
+    scene.backgroundBlurriness = QUALITY === "low" ? 0.06 : 0.02;
+    scene.backgroundIntensity = 1.05;
+    scene.environmentIntensity = QUALITY === "low" ? 1.05 : 1.25;
+    // Near plane past boosted reaction (~39u) so obstacles aren't fogged out
     scene.fog = new THREE.Fog(
       0x8fa8bc,
-      QUALITY === "low" ? 28 : 40,
-      QUALITY === "low" ? 95 : 125
+      QUALITY === "low" ? 55 : 72,
+      QUALITY === "low" ? 150 : 180
     );
     hdr.dispose();
     pmrem.dispose();
@@ -1125,6 +1129,7 @@ async function loadRoadsterModel(root) {
 
   const loader = new GLTFLoader();
   let model;
+  let modelSource = "glb";
   try {
     const gltf = await new Promise((resolve, reject) => {
       loader.load(
@@ -1142,6 +1147,7 @@ async function loadRoadsterModel(root) {
     console.warn("GLB load failed — procedural fallback", err);
     const built = buildRoadster2026();
     model = built.model;
+    modelSource = "procedural";
   }
 
   // Authored GLB: +X forward, +Y up — sit tires on y=0
@@ -1162,25 +1168,62 @@ async function loadRoadsterModel(root) {
   body.add(model);
   model.updateMatrixWorld(true);
 
+  // Restore showroom look from dbcd4c0-era Roadster: rich env response +
+  // clearcoat paint. (Perf pass left the GLB intact but starved reflections.)
   model.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = true;
-      o.receiveShadow = true;
-      const mats = Array.isArray(o.material) ? o.material : [o.material];
-      for (const m of mats) {
-        if (!m) continue;
-        if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
-        m.envMapIntensity = Math.max(m.envMapIntensity || 0, 0.9);
-        // Keep canopy opaque — no see-through gaps
-        if (o.name === "Canopy" || (m.name && /glass/i.test(m.name))) {
-          m.transparent = false;
-          m.opacity = 1;
-          if ("transmission" in m) m.transmission = 0;
-          m.depthWrite = true;
-        }
-        m.needsUpdate = true;
+    if (!o.isMesh || !o.material) return;
+    o.castShadow = true;
+    o.receiveShadow = true;
+    const list = Array.isArray(o.material) ? o.material : [o.material];
+    const next = list.map((m) => {
+      if (!m) return m;
+      if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+      const name = m.name || "";
+      if (/^Paint$/i.test(name) || (name === "" && o.name === "BodyShell")) {
+        const paint = new THREE.MeshPhysicalMaterial({
+          color: m.color?.clone?.() || new THREE.Color(0xe6e8ed),
+          metalness: Math.max(0.38, m.metalness ?? 0.45),
+          roughness: Math.min(0.32, m.roughness ?? 0.32),
+          envMapIntensity: 1.45,
+          clearcoat: QUALITY === "high" ? 0.7 : 0.45,
+          clearcoatRoughness: 0.22,
+          reflectivity: 0.9,
+        });
+        paint.name = "Paint";
+        return paint;
       }
-    }
+      if (/Glass/i.test(name) || o.name === "Canopy") {
+        // Sealed canopy (dbcd4c0) — opaque but highly reflective, not chalky
+        const glass = new THREE.MeshPhysicalMaterial({
+          color: m.color?.clone?.() || new THREE.Color(0x0a0d12),
+          metalness: 0.55,
+          roughness: 0.06,
+          envMapIntensity: 2.1,
+          clearcoat: 0.35,
+          clearcoatRoughness: 0.08,
+          transparent: false,
+          opacity: 1,
+          depthWrite: true,
+        });
+        glass.name = m.name || "Glass";
+        return glass;
+      }
+      if (/LED/i.test(name)) {
+        m.emissiveIntensity = Math.max(m.emissiveIntensity || 0, 3.5);
+        m.envMapIntensity = Math.max(m.envMapIntensity || 0, 1.0);
+        m.needsUpdate = true;
+        return m;
+      }
+      if (/Brass|Aero|Spoke|Plate/i.test(name)) {
+        m.envMapIntensity = Math.max(m.envMapIntensity || 0, 1.35);
+        m.needsUpdate = true;
+        return m;
+      }
+      m.envMapIntensity = Math.max(m.envMapIntensity || 0, 1.05);
+      m.needsUpdate = true;
+      return m;
+    });
+    o.material = Array.isArray(o.material) ? next : next[0];
   });
 
   if (QUALITY === "high") {
@@ -1218,6 +1261,7 @@ async function loadRoadsterModel(root) {
 
   root.userData.wheels = wheels;
   root.userData.model = model;
+  root.userData.modelSource = modelSource;
   root.userData.ready = true;
   root.userData._height = height;
   return root;
@@ -1528,6 +1572,37 @@ function jerseyGeometry(depth = 2.4) {
   return geo;
 }
 
+/** High-contrast hazard band — readable from the side cam through fog. */
+function hazardEdgeMat(hot = false) {
+  return new THREE.MeshStandardMaterial({
+    color: hot ? 0xff3b3b : 0xffc107,
+    emissive: hot ? 0xff1a1a : 0xff9800,
+    emissiveIntensity: hot ? 1.35 : 1.05,
+    roughness: 0.35,
+    metalness: 0.15,
+    envMapIntensity: 0.4,
+  });
+}
+
+function addHazardBeacon(parent, y, zSpan = 2.5) {
+  const mat = hazardEdgeMat(true);
+  const band = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.18, zSpan), mat);
+  band.position.set(0, y, 0);
+  band.userData.hazardBeacon = true;
+  parent.add(band);
+  // Thin outline rings so silhouette pops even when deck is opaque
+  const rim = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 1.35, 0.08),
+    hazardEdgeMat(false)
+  );
+  rim.position.set(0.55, y, 0);
+  rim.userData.hazardBeacon = true;
+  parent.add(rim);
+  const rimL = rim.clone();
+  rimL.position.x = -0.55;
+  parent.add(rimL);
+}
+
 function makeBarrier(level, onCeiling = false) {
   const g = new THREE.Group();
   const ly = floorY(level);
@@ -1537,43 +1612,46 @@ function makeBarrier(level, onCeiling = false) {
 
   if (onCeiling) {
     // Hanging construction / hazard panel (not a floor Jersey)
-    const panelMat = pbrFrom(maps.metal, 1.4, 1.0, {
-      color: 0x8a9098,
-      metalness: 0.7,
-      roughness: 0.35,
-      envMapIntensity: 0.9,
-      normalScale: new THREE.Vector2(1.1, 1.1),
+    const panelMat = new THREE.MeshStandardMaterial({
+      color: 0xff6b35,
+      emissive: 0xc2410c,
+      emissiveIntensity: 0.55,
+      metalness: 0.35,
+      roughness: 0.4,
+      envMapIntensity: 0.7,
     });
     const panel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.15, 2.35), panelMat);
     panel.position.set(0, cy - 0.75, 0);
-    panel.castShadow = true;
+    panel.castShadow = false;
     g.add(panel);
 
     const stripeMat = new THREE.MeshStandardMaterial({
-      map: stripeMap.clone(),
-      roughness: 0.55,
+      map: stripeMap ? stripeMap.clone() : null,
+      color: 0xffffff,
+      emissive: 0xffc107,
+      emissiveIntensity: 0.85,
+      roughness: 0.4,
       metalness: 0.1,
     });
-    stripeMat.map.repeat.set(3, 1);
-    stripeMat.map.needsUpdate = true;
+    if (stripeMat.map) {
+      stripeMat.map.repeat.set(3, 1);
+      stripeMat.map.needsUpdate = true;
+    }
     for (const side of [-1, 1]) {
-      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.35), stripeMat);
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.45), stripeMat);
       stripe.position.set(0, cy - 0.55, side * 1.19);
       stripe.rotation.y = side > 0 ? 0 : Math.PI;
       g.add(stripe);
     }
-    const frameMat = pbrFrom(maps.concretePanel, 1, 1, {
-      color: 0xb0b6be,
-      roughness: 0.7,
-      metalness: 0.15,
-    });
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.12, 2.5), frameMat);
+    const frameMat = hazardEdgeMat(true);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.16, 2.5), frameMat);
     frame.position.set(0, cy - 0.18, 0);
     g.add(frame);
-    // Suspension stems
-    const stemMat = pbrFrom(maps.metal, 0.3, 0.5, {
-      color: 0x4a5058,
-      metalness: 0.85,
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: 0xffc107,
+      emissive: 0xff9800,
+      emissiveIntensity: 0.7,
+      metalness: 0.5,
       roughness: 0.3,
     });
     for (const z of [-0.7, 0.7]) {
@@ -1581,25 +1659,29 @@ function makeBarrier(level, onCeiling = false) {
       stem.position.set(0, cy - 0.08, z);
       g.add(stem);
     }
+    addHazardBeacon(g, cy - 0.75, 2.6);
   } else {
-    const bodyMat = pbrFrom(maps.concretePanel, 1.2, 1.0, {
-      color: 0xc8ccd2,
-      roughness: 0.82,
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0xf5f0e6,
+      emissive: 0x3a3020,
+      emissiveIntensity: 0.15,
+      roughness: 0.7,
       metalness: 0.08,
-      envMapIntensity: 0.4,
-      normalScale: new THREE.Vector2(1.2, 1.2),
+      envMapIntensity: 0.35,
     });
     const jersey = new THREE.Mesh(jerseyGeometry(2.4), bodyMat);
     jersey.position.set(0, ly, 0);
-    jersey.castShadow = true;
+    jersey.castShadow = false;
     jersey.receiveShadow = true;
     g.add(jersey);
 
-    // Hazard stripe decal along the face
+    // Wide emissive hazard stripes — readable from side cam
     const stripeMat = new THREE.MeshStandardMaterial({
       map: stripeMap ? stripeMap.clone() : null,
-      color: stripeMap ? 0xffffff : useRW ? 0xe8e8e8 : 0xf4c430,
-      roughness: 0.6,
+      color: 0xffffff,
+      emissive: useRW ? 0xff1744 : 0xffc107,
+      emissiveIntensity: 1.1,
+      roughness: 0.45,
       metalness: 0.05,
       polygonOffset: true,
       polygonOffsetFactor: -1,
@@ -1608,12 +1690,17 @@ function makeBarrier(level, onCeiling = false) {
       stripeMat.map.repeat.set(4, 1);
       stripeMat.map.needsUpdate = true;
     }
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.28, 2.35), stripeMat);
-    stripe.position.set(0.48, ly + 0.95, 0);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 2.45), stripeMat);
+    stripe.position.set(0.5, ly + 0.95, 0);
     g.add(stripe);
     const stripeL = stripe.clone();
-    stripeL.position.x = -0.48;
+    stripeL.position.x = -0.5;
     g.add(stripeL);
+    // Top cap beacon
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.12, 2.5), hazardEdgeMat(true));
+    cap.position.set(0, ly + 1.22, 0);
+    g.add(cap);
+    addHazardBeacon(g, ly + 0.7, 2.55);
   }
 
   g.userData = {
@@ -1637,21 +1724,29 @@ function ceilingSupportDeck(level) {
 function makeHangingSoffitHazard(level, kind = "sign") {
   const g = new THREE.Group();
   const cy = ceilingY(level);
-  const metal = pbrFrom(maps.metal, 0.5, 0.5, {
-    color: 0x5a626c,
-    metalness: 0.82,
-    roughness: 0.28,
+  // High-contrast soffit props — never camouflage into grey concrete
+  const metal = new THREE.MeshStandardMaterial({
+    color: 0xff7043,
+    emissive: 0xd84315,
+    emissiveIntensity: 0.65,
+    metalness: 0.45,
+    roughness: 0.35,
+    envMapIntensity: 0.8,
   });
-  const paint = pbrFrom(maps.concretePanel, 0.8, 0.8, {
-    color: 0xc4c8ce,
-    roughness: 0.72,
-    metalness: 0.12,
+  const paint = new THREE.MeshStandardMaterial({
+    color: 0xffe082,
+    emissive: 0xff6f00,
+    emissiveIntensity: 0.55,
+    roughness: 0.5,
+    metalness: 0.1,
     envMapIntensity: 0.4,
   });
   const stripeMat = new THREE.MeshStandardMaterial({
     map: hazardStripeYB ? hazardStripeYB.clone() : null,
     color: 0xffffff,
-    roughness: 0.55,
+    emissive: 0xffc107,
+    emissiveIntensity: 1.0,
+    roughness: 0.4,
     metalness: 0.08,
   });
   if (stripeMat.map) {
@@ -1660,13 +1755,15 @@ function makeHangingSoffitHazard(level, kind = "sign") {
   }
 
   const addStem = (x, z, len = 0.4) => {
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 6), metal);
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.04, len, 6),
+      hazardEdgeMat(false)
+    );
     stem.position.set(x, cy - len * 0.5, z);
     g.add(stem);
   };
 
   if (kind === "pipe") {
-    // Bundle of conduit pipes hanging below the soffit
     for (let i = 0; i < 3; i++) {
       const z = (i - 1) * 0.62;
       const pipe = new THREE.Mesh(
@@ -1675,7 +1772,7 @@ function makeHangingSoffitHazard(level, kind = "sign") {
       );
       pipe.rotation.z = Math.PI / 2;
       pipe.position.set(0, cy - 0.7 - i * 0.14, z);
-      pipe.castShadow = true;
+      pipe.castShadow = false;
       g.add(pipe);
       addStem(-0.85, z, 0.45);
       addStem(0.85, z, 0.45);
@@ -1683,11 +1780,11 @@ function makeHangingSoffitHazard(level, kind = "sign") {
   } else if (kind === "duct") {
     const duct = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.95, 1.6), paint);
     duct.position.set(0, cy - 0.75, 0);
-    duct.castShadow = true;
+    duct.castShadow = false;
     g.add(duct);
     const mouth = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.45, 1.1),
-      new THREE.MeshStandardMaterial({ color: 0x2a2e34, roughness: 0.9, metalness: 0.05 })
+      hazardEdgeMat(true)
     );
     mouth.position.set(1.34, cy - 0.75, 0);
     g.add(mouth);
@@ -1696,13 +1793,12 @@ function makeHangingSoffitHazard(level, kind = "sign") {
     addStem(0.7, -0.45, 0.35);
     addStem(0.7, 0.45, 0.35);
   } else if (kind === "barrier") {
-    // Suspended construction panel (legacy ceiling barrier look)
     const panel = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.15, 2.35), metal);
     panel.position.set(0, cy - 0.75, 0);
-    panel.castShadow = true;
+    panel.castShadow = false;
     g.add(panel);
     for (const side of [-1, 1]) {
-      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.35), stripeMat);
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(1.75, 0.45), stripeMat);
       stripe.position.set(0, cy - 0.55, side * 1.19);
       stripe.rotation.y = side > 0 ? 0 : Math.PI;
       g.add(stripe);
@@ -1712,27 +1808,27 @@ function makeHangingSoffitHazard(level, kind = "sign") {
     addStem(0.5, -0.7, 0.35);
     addStem(0.5, 0.7, 0.35);
   } else {
-    // Hanging shop / wayfinding sign
-    const board = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.05, 2.1), paint);
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.15, 2.2), paint);
     board.position.set(0, cy - 0.85, 0);
-    board.castShadow = true;
+    board.castShadow = false;
     g.add(board);
     const face = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.9, 0.7),
+      new THREE.PlaneGeometry(2.0, 0.85),
       new THREE.MeshStandardMaterial({
-        color: 0xe8c84a,
-        roughness: 0.45,
+        color: 0xffe566,
+        roughness: 0.35,
         metalness: 0.05,
-        emissive: 0x3a3010,
-        emissiveIntensity: 0.25,
+        emissive: 0xffab00,
+        emissiveIntensity: 1.15,
       })
     );
-    face.position.set(0.07, cy - 0.85, 0);
+    face.position.set(0.08, cy - 0.85, 0);
     face.rotation.y = Math.PI / 2;
     g.add(face);
     addStem(0, -0.75, 0.45);
     addStem(0, 0.75, 0.45);
   }
+  addHazardBeacon(g, cy - 0.8, 2.4);
 
   g.userData = {
     type: "ceilingHazard",
@@ -3116,6 +3212,7 @@ function updatePlayer(dt) {
   updateSpeedLines(dt);
   updateDeckCutaway();
   updateBuildingCutaway();
+  updateLandingIndicators();
   updatePlayHint(dt);
 
   if (state.invuln > 0) state.invuln -= dt;
@@ -3402,37 +3499,207 @@ function anyThrustVisible() {
 }
 
 
+/** Clone shared PBR mats per-mesh so cutaway opacity doesn't fight the cache. */
+function ensureCutawayUniqueMats(mesh) {
+  if (mesh.userData.cutUnique) return;
+  const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const cloned = list.map((m) => {
+    if (!m) return m;
+    const c = m.clone();
+    return c;
+  });
+  mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
+  mesh.userData.cutUnique = true;
+}
+
 /**
- * Keep road decks / curbs / soffits fully opaque.
- * (Earlier cutaway faded them glassy so the chase cam could see the car —
- * that looked like transparent roads. Visibility is handled by camera framing
- * + building cutaway only.)
+ * Side-cam readability: fade deck slabs that sit between the lens and other
+ * levels' roads/obstacles (ahead of the car, within reaction distance).
+ * Current drive surface stays mostly solid under the tires.
  */
 function updateDeckCutaway() {
+  const carX = roadster.position.x;
+  const drive = state.level;
+  const inv = state.inverted || state.flipping;
+  const lookAhead = minOverlapDist() + SEGMENT_LEN * 1.1;
+
   for (const seg of segments) {
-    const mats = seg.userData.cutawayMats;
-    if (mats) {
-      for (const m of mats) {
-        if (m.userData?.forceGlass) continue;
-        m.transparent = false;
-        m.opacity = 1;
-        m.depthWrite = true;
-        if ("transmission" in m) m.transmission = 0;
+    if (seg.userData.hasGap) continue;
+    const li = seg.userData.levelIndex;
+    const dx = seg.position.x - carX;
+    const ahead = dx > -8 && dx < lookAhead;
+
+    // Fade decks that occlude other levels from the left chase cam
+    let opacity = 1;
+    if (ahead) {
+      if (inv) {
+        const soffit = ceilingSupportDeck(drive);
+        if (li === soffit) opacity = 0.14;
+        else if (li < drive) opacity = 0.28;
+        else if (li !== drive) opacity = 0.32;
+      } else {
+        if (li === drive + 1) opacity = 0.12;
+        else if (li > drive) opacity = 0.2;
+        else if (li < drive) opacity = 0.35;
+        else if (li === drive) opacity = dx > 5 ? 0.7 : 1;
       }
     }
-    // Belt-and-suspenders: every deck mesh stays solid (skip marked glass)
+
     seg.traverse((o) => {
       if (!o.isMesh || !o.material) return;
+      if (o.userData?.hazardBeacon) return;
+      const list0 = Array.isArray(o.material) ? o.material : [o.material];
+      // Keep high-emissive hazard/edge marks fully opaque
+      const isEmissiveMark = list0.some(
+        (m) => m && (m.emissiveIntensity || 0) > 0.25 && m.emissive && m.emissive.getHex() !== 0
+      );
+      if (isEmissiveMark) return;
+
+      if (opacity < 0.99) ensureCutawayUniqueMats(o);
       const list = Array.isArray(o.material) ? o.material : [o.material];
       for (const m of list) {
         if (!m || m.userData?.forceGlass) continue;
-        m.transparent = false;
-        m.opacity = 1;
-        m.depthWrite = true;
-        if ("transmission" in m) m.transmission = 0;
+        m.transparent = opacity < 0.98;
+        m.opacity = opacity;
+        m.depthWrite = opacity > 0.5;
+        if ("transmission" in m) m.transmission = opacity < 0.45 ? 0.2 : 0;
       }
     });
   }
+}
+
+/* ── Hop / flip landing ghosts (where the car will end up) ─── */
+let landIndicators = null;
+function ensureLandIndicators() {
+  if (landIndicators) return landIndicators;
+  const g = new THREE.Group();
+  const mk = (color) => {
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.95, 1.45, 32), mat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.renderOrder = 20;
+    const pad = new THREE.Mesh(
+      new THREE.CircleGeometry(0.9, 28),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        depthTest: false,
+        toneMapped: false,
+      })
+    );
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.y = 0.02;
+    pad.renderOrder = 19;
+    const chevron = new THREE.Mesh(
+      new THREE.ConeGeometry(0.42, 0.85, 3),
+      mat.clone()
+    );
+    chevron.rotation.x = Math.PI / 2;
+    chevron.position.y = 0.08;
+    chevron.renderOrder = 21;
+    const group = new THREE.Group();
+    group.add(pad);
+    group.add(ring);
+    group.add(chevron);
+    group.userData.mat = mat;
+    group.userData.padMat = pad.material;
+    group.userData.chevMat = chevron.material;
+    group.visible = false;
+    g.add(group);
+    return group;
+  };
+  landIndicators = {
+    root: g,
+    up: mk(0x5eead4),
+    down: mk(0x38bdf8),
+    flip: mk(0xfbbf24),
+  };
+  scene.add(g);
+  return landIndicators;
+}
+
+function setIndicator(ind, visible, x, y, pitch = 0) {
+  ind.visible = visible;
+  if (!visible) {
+    ind.userData.mat.opacity = 0;
+    ind.userData.chevMat.opacity = 0;
+    if (ind.userData.padMat) ind.userData.padMat.opacity = 0;
+    return;
+  }
+  ind.position.set(x, y + 0.06, 0);
+  ind.rotation.x = pitch;
+  ind.userData.mat.opacity = 0.72;
+  ind.userData.chevMat.opacity = 0.85;
+  if (ind.userData.padMat) ind.userData.padMat.opacity = 0.28;
+}
+
+function updateLandingIndicators() {
+  const L = ensureLandIndicators();
+  if (!state.running || state.dead || state.falling || state.hopping || state.flipping) {
+    setIndicator(L.up, false);
+    setIndicator(L.down, false);
+    setIndicator(L.flip, false);
+    return;
+  }
+  const x = roadster.position.x;
+  const previewX = x + Math.max(6, state.speed * 0.55);
+  const li = state.level;
+
+  // Show hop targets when adjacent level has support at preview X
+  const canUp =
+    li < LEVELS.length - 1 &&
+    (state.inverted ? hasCeilingAt(li + 1, previewX) : hasDeckAt(li + 1, previewX));
+  const canDown =
+    li > 0 &&
+    (state.inverted ? hasCeilingAt(li - 1, previewX) : hasDeckAt(li - 1, previewX));
+  const nextInv = !state.inverted;
+  const canFlip = nextInv
+    ? hasCeilingAt(li, previewX)
+    : hasDeckAt(li, previewX);
+
+  // Emphasize when current support ends soon (gap ahead on this drive-level)
+  let gapSoon = false;
+  for (let d = 2; d < minOverlapDist(); d += 3) {
+    if (!hasSupport(li, x + d)) {
+      gapSoon = true;
+      break;
+    }
+  }
+
+  const pulse = 0.65 + 0.35 * Math.sin(state.time * 7);
+  const syncOp = (ind, base) => {
+    const o = base * pulse;
+    ind.userData.mat.opacity = o;
+    ind.userData.chevMat.opacity = o;
+    if (ind.userData.padMat) ind.userData.padMat.opacity = o * 0.4;
+  };
+
+  if (canUp) {
+    const y = surfaceY(li + 1, state.inverted);
+    setIndicator(L.up, true, previewX, y, state.inverted ? Math.PI : 0);
+    syncOp(L.up, gapSoon ? 0.95 : 0.72);
+  } else setIndicator(L.up, false);
+
+  if (canDown) {
+    const y = surfaceY(li - 1, state.inverted);
+    setIndicator(L.down, true, previewX, y, state.inverted ? Math.PI : 0);
+    syncOp(L.down, gapSoon ? 0.95 : 0.68);
+  } else setIndicator(L.down, false);
+
+  if (canFlip) {
+    const y = surfaceY(li, nextInv);
+    setIndicator(L.flip, true, previewX, y, nextInv ? Math.PI : 0);
+    syncOp(L.flip, gapSoon ? 0.98 : 0.7);
+  } else setIndicator(L.flip, false);
 }
 
 /**
@@ -4243,6 +4510,8 @@ function exposeAPI() {
       const size = box ? box.getSize(new THREE.Vector3()) : null;
       return {
         ready: !!ud.ready,
+        modelSource: ud.modelSource || null,
+        modelName: ud.model?.name || null,
         wheels: ud.wheels?.length || 0,
         carClearance: CAR_CLEARANCE,
         height: ud._height || 0,
